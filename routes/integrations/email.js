@@ -3,10 +3,13 @@
 // Gmail OAuth connection routes (EM2 — Architecture/architecture/
 // EMAIL_INGESTION.md §14.1), extended in EM3 with organization policy
 // (/policy, /settings), in EM4 with the member mailbox settings surface
-// (/connections/:id/sync-mode, /member-settings), in EM5 with the
-// label-query dry-run preview (/connections/:id/preview), and in EM6 with
-// real historical import (/connections/:id/sync) — the first route in this
-// file that actually forwards content to AIKB. Thin Express adapter — all
+// (/member-settings), in EM5 with the label-query dry-run preview
+// (/connections/:id/preview), and in EM6 with real historical import
+// (/connections/:id/sync) — the first route in this file that actually
+// forwards content to AIKB. EM10.6 removed Automatic Email Ingestion
+// (/connections/:id/sync-mode and /sync/tick, along with automatic mode
+// itself) — Gmail ingestion is label-driven only now, see
+// EMAIL_INGESTION.md's EM10.6 record. Thin Express adapter — all
 // logic lives in services/emailConnectionService.js / services/
 // emailPolicyService.js / services/emailPreviewService.js /
 // services/emailSyncService.js / services/supabaseService.js so it stays
@@ -32,7 +35,6 @@
 const express = require('express');
 const router = express.Router();
 const clientAuth = require('../../middleware/clientAuth');
-const requireSystemServiceRequest = require('../../middleware/requireSystemServiceRequest');
 const emailConnectionService = require('../../services/emailConnectionService');
 const oauthConnectionsService = require('../../services/oauthConnectionsService');
 const gmailService = require('../../services/gmailService');
@@ -56,28 +58,6 @@ function requireOwnerAdmin(req, res, next) {
   }
   next();
 }
-
-/**
- * POST /api/integrations/email/sync/tick
- * System-scoped (EM8 — §18.3, §31), NOT clientAuth — the only route in this
- * file with a different auth shape entirely, deliberately kept apart from
- * every self-service/owner-admin route below. The sole intended caller is
- * AIKB's Inngest cron function, carrying zero client-specific data;
- * requireSystemServiceRequest verifies the system-scoped envelope (no
- * clientId anywhere, see services/serviceRequestAuth.js) before this
- * handler ever runs. Fans out one incremental sync per due automatic-mode
- * connection via emailSyncService.runTick, isolating per-connection
- * failures so one broken connection never aborts the tick.
- */
-router.post('/sync/tick', requireSystemServiceRequest, async (req, res) => {
-  try {
-    const result = await emailSyncService.runTick();
-    res.json(result);
-  } catch (err) {
-    console.error('POST /api/integrations/email/sync/tick error:', err.message);
-    res.status(500).json({ error: 'Could not run the sync tick.' });
-  }
-});
 
 /**
  * GET /api/integrations/email/:provider/start
@@ -199,51 +179,10 @@ router.post('/connections/:id/disconnect', clientAuth, async (req, res) => {
 });
 
 /**
- * POST /api/integrations/email/connections/:id/sync-mode
- * Self-service only (EM4 — §14.1, §31) — the connection's own member, no
- * owner/admin override, same authorization shape as disconnect above
- * (reuses canDisconnectConnection since "do you own this connection" is
- * identical in both cases). Body: { syncMode: 'manual_selected'|'automatic' }.
- * `automatic` is rejected while the client's automatic_sync_enabled setting
- * is off (§Manual vs Automatic Sync). `paused` is out of EM4's scope —
- * reached only via a separate pause/resume control not built in this
- * milestone.
- */
-router.post('/connections/:id/sync-mode', clientAuth, async (req, res) => {
-  const { id } = req.params;
-  const { syncMode } = req.body;
-  if (!['manual_selected', 'automatic'].includes(syncMode)) {
-    return res.status(400).json({ error: 'syncMode must be "manual_selected" or "automatic"' });
-  }
-  try {
-    const connection = await oauthConnectionsService.getConnectionById(id);
-    if (!connection || connection.client_id !== req.client.id || connection.provider !== PROVIDER) {
-      return res.status(404).json({ error: 'Connection not found.' });
-    }
-    if (!canDisconnectConnection({ connection, actingMemberId: req.member.id })) {
-      return res.status(403).json({ error: 'Insufficient permissions' });
-    }
-
-    const result = await emailConnectionService.updateSyncMode({
-      clientId: req.client.id,
-      oauthConnectionId: id,
-      syncMode,
-    });
-    res.json(result);
-  } catch (err) {
-    if (err.code === 'AUTOMATIC_SYNC_DISABLED') {
-      return res.status(400).json({ error: err.message });
-    }
-    console.error('POST /api/integrations/email/connections/:id/sync-mode error:', err.message);
-    res.status(500).json({ error: 'Could not update sync mode.' });
-  }
-});
-
-/**
  * POST /api/integrations/email/connections/:id/pause
  * POST /api/integrations/email/connections/:id/resume
  * Self-service only (EM8 — §14.1, §Lifecycle "Paused", §31) — same
- * ownership shape as sync-mode/disconnect above (reuses
+ * ownership shape as disconnect above (reuses
  * canDisconnectConnection). The gap EM4's own record flagged (no
  * pause/resume route existed anywhere) — see emailConnectionService.js's
  * pauseConnection/resumeConnection for the pre_pause_sync_mode bookkeeping
@@ -298,7 +237,7 @@ router.post('/connections/:id/resume', clientAuth, async (req, res) => {
  * GET /api/integrations/email/member-settings
  * PUT /api/integrations/email/member-settings
  * Self-service, own row only (EM4 — §7, §13.1, §31). Distinct from GET/PUT
- * /settings above, which is the org-wide automatic-sync switch — this is
+ * /settings above, which is the org-wide live-lookup switch — this is
  * the member's own `client_members.search_enabled` gate: off means nothing
  * from this member's mailbox ever becomes searchable, regardless of sync
  * mode or label (§Policy Evaluation Model). `req.member` is already loaded
@@ -325,12 +264,12 @@ router.put('/member-settings', clientAuth, async (req, res) => {
 /**
  * POST /api/integrations/email/connections/:id/preview
  * Self-service only (EM5 — §14.1, §17, §31), same ownership shape as
- * sync-mode above (reuses canDisconnectConnection). Dry-run: compiles a
- * Gmail search query from the connection's current sync_mode plus
- * organization policy, lists a bounded page of candidates, and re-verifies
- * each one locally via the Policy Evaluation Model (§16) — never fetches
- * message bodies, never persists anything, never ingests. Body: optional
- * `{pageToken}` to continue a prior call's pagination.
+ * disconnect above (reuses canDisconnectConnection). Dry-run: compiles the
+ * Relativity/Knowledge label query plus organization policy, lists a
+ * bounded page of candidates, and re-verifies each one locally via the
+ * Policy Evaluation Model (§16) — never fetches message bodies, never
+ * persists anything, never ingests. Body: optional `{pageToken}` to
+ * continue a prior call's pagination.
  */
 router.post('/connections/:id/preview', clientAuth, async (req, res) => {
   const { id } = req.params;
@@ -358,16 +297,11 @@ router.post('/connections/:id/preview', clientAuth, async (req, res) => {
       throw err;
     }
 
-    // Automatic mode never consults the label (§16.1 item 3) — only
-    // manual/paused connections need managed_label_id resolved before the
-    // preview's hasLabel check can be trusted.
-    if (emailConnectionRow.sync_mode !== 'automatic') {
-      emailConnectionRow.managed_label_id = await emailConnectionService.ensureManagedLabel({
-        oauthConnectionId: id,
-        emailConnectionRow,
-        accessToken,
-      });
-    }
+    emailConnectionRow.managed_label_id = await emailConnectionService.ensureManagedLabel({
+      oauthConnectionId: id,
+      emailConnectionRow,
+      accessToken,
+    });
 
     const { pageToken } = req.body || {};
     const result = await emailPreviewService.buildPreview({
@@ -386,11 +320,9 @@ router.post('/connections/:id/preview', clientAuth, async (req, res) => {
 /**
  * POST /api/integrations/email/connections/:id/sync
  * Self-service only (EM6/EM7 — §14.2, §15, §17, §18, §31), same ownership
- * shape as preview/sync-mode above (reuses canDisconnectConnection). Runs
- * one bounded page of sync — historical (EM6) or incremental (EM7),
- * decided automatically from the connection's stored cursor — `manual_
- * selected` mode only (a connection whose sync_mode is `automatic` gets a
- * distinct 400, deferred to EM8, see emailSyncService.js's file header).
+ * shape as preview above (reuses canDisconnectConnection). Runs one bounded
+ * page of sync — historical (EM6) or incremental (EM7), decided
+ * automatically from the connection's stored cursor.
  * Body: optional `{pageToken, runType}` to continue a prior call's
  * pagination — EM7 requires BOTH together when resuming (the response
  * always echoes the `runType` a caller must pass back, since a resumed page
@@ -425,13 +357,11 @@ router.post('/connections/:id/sync', clientAuth, async (req, res) => {
       throw err;
     }
 
-    if (emailConnectionRow.sync_mode !== 'automatic') {
-      emailConnectionRow.managed_label_id = await emailConnectionService.ensureManagedLabel({
-        oauthConnectionId: id,
-        emailConnectionRow,
-        accessToken,
-      });
-    }
+    emailConnectionRow.managed_label_id = await emailConnectionService.ensureManagedLabel({
+      oauthConnectionId: id,
+      emailConnectionRow,
+      accessToken,
+    });
 
     const { pageToken, runType } = req.body || {};
     const result = await emailSyncService.syncConnection({
@@ -530,10 +460,12 @@ router.put('/policy', clientAuth, requireOwnerAdmin, async (req, res) => {
 
 /**
  * GET /api/integrations/email/settings
- * Any active member — informs whether the sync-mode selector even offers
- * Automatic (§14.1). Fails closed (automaticSyncEnabled: false) when the
- * client has never visited this setting, since email_organization_settings
- * is created lazily (§13.1).
+ * Any active member — reads the org-wide live-lookup switch. Fails closed
+ * (liveLookupEnabled: false) when the client has never visited this
+ * setting, since email_organization_settings is created lazily (§13.1).
+ * (This route used to also carry automaticSyncEnabled, the org-wide
+ * Automatic Email Ingestion switch — removed in EM10.6, see
+ * EMAIL_INGESTION.md's EM10.6 record.)
  */
 router.get('/settings', clientAuth, async (req, res) => {
   try {
@@ -547,23 +479,17 @@ router.get('/settings', clientAuth, async (req, res) => {
 
 /**
  * PUT /api/integrations/email/settings
- * owner/admin only (§14.1). Body: { automaticSyncEnabled, liveLookupEnabled? }.
- * Toggles the org-wide automatic-sync switch (§13.1) and, as of EL6, the
- * independent org-wide live-lookup switch (§2.1) — liveLookupEnabled is
- * optional; omitting it leaves the stored value untouched.
+ * owner/admin only (§14.1). Body: { liveLookupEnabled }. Toggles the
+ * org-wide live-lookup switch (§2.1, EL6).
  */
 router.put('/settings', clientAuth, requireOwnerAdmin, async (req, res) => {
-  const { automaticSyncEnabled, liveLookupEnabled } = req.body;
-  if (typeof automaticSyncEnabled !== 'boolean') {
-    return res.status(400).json({ error: 'automaticSyncEnabled must be a boolean' });
-  }
-  if (liveLookupEnabled !== undefined && typeof liveLookupEnabled !== 'boolean') {
-    return res.status(400).json({ error: 'liveLookupEnabled must be a boolean when provided' });
+  const { liveLookupEnabled } = req.body;
+  if (typeof liveLookupEnabled !== 'boolean') {
+    return res.status(400).json({ error: 'liveLookupEnabled must be a boolean' });
   }
   try {
     const result = await emailPolicyService.updateSettings({
       clientId: req.client.id,
-      automaticSyncEnabled,
       liveLookupEnabled,
       updatedByMemberId: req.member.id,
     });

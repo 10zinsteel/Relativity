@@ -101,16 +101,11 @@ module.exports = {
     // EM5 (services/emailPreviewService.js) — one Gmail messages.get round
     // trip per candidate in the label-query dry-run preview.
     previewPageSize: parsePositiveInt('EMAIL_PREVIEW_PAGE_SIZE', process.env.EMAIL_PREVIEW_PAGE_SIZE, 10),
-    // EM8 (services/emailSyncService.js, §18.3) — how long after a completed
-    // automatic-mode sync before email_sync_state.next_sync_due_at makes the
-    // connection eligible again for the tick handler. Should roughly match
-    // AIKB's own EMAIL_SYNC_TICK_CRON_SCHEDULE cadence (documented, not
-    // enforced across the two repos/config systems).
-    tickIntervalMs: parsePositiveInt('EMAIL_SYNC_TICK_INTERVAL_MS', process.env.EMAIL_SYNC_TICK_INTERVAL_MS, 20 * 60 * 1000),
-    // EM8 — the tick handler's per-request processing cap (Vercel timeout,
-    // same reasoning as historicalSyncPageSize above) — connections beyond
-    // this many due ones simply wait for the next tick.
-    tickMaxConnections: parsePositiveInt('EMAIL_SYNC_TICK_MAX_CONNECTIONS', process.env.EMAIL_SYNC_TICK_MAX_CONNECTIONS, 10),
+    // EM8 added tickIntervalMs/tickMaxConnections here for the automatic-sync
+    // tick handler; both removed in EM10.6 along with Automatic Email
+    // Ingestion itself (EMAIL_SYNC_TICK_INTERVAL_MS/EMAIL_SYNC_TICK_MAX_CONNECTIONS
+    // are no longer read anywhere in this repo — see EMAIL_INGESTION.md's
+    // EM10.6 record).
     // EL2 (Architecture/architecture/LIVE_EMAIL_LOOKUP.md §4) — hard,
     // server-side caps for the read-only search_email_messages/
     // get_email_content tools, enforced by

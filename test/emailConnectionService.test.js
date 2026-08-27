@@ -20,11 +20,8 @@ function makeFakes(overrides = {}) {
     upsertConnection: [],
     getByOauthConnectionId: [],
     getConnectionById: [],
-    updateSyncMode: [],
     pauseConnection: [],
     resumeConnection: [],
-    getNextSyncDueAt: [],
-    getSettings: [],
     getOrCreateManagedLabel: [],
     updateManagedLabelId: [],
     refreshAccessToken: [],
@@ -208,22 +205,6 @@ function makeFakes(overrides = {}) {
       if (overrides.resumeConnection) return overrides.resumeConnection(oauthConnectionId, restoredSyncMode);
       return { oauth_connection_id: oauthConnectionId, sync_mode: restoredSyncMode, pre_pause_sync_mode: null };
     },
-    // EM8 — GET /connections, automatic-mode connections only.
-    getNextSyncDueAt: async (emailConnectionId) => {
-      calls.getNextSyncDueAt.push(emailConnectionId);
-      if (overrides.getNextSyncDueAt) return overrides.getNextSyncDueAt(emailConnectionId);
-      return null;
-    },
-    // EM4 — POST /connections/:id/sync-mode. `null` return models "no
-    // email_connections row exists for this oauth_connection_id" (should be
-    // unreachable in production once EM2's connect flow has run, but
-    // updateSyncMode still treats it as CONNECTION_NOT_FOUND rather than
-    // assuming the row exists).
-    updateSyncMode: async (oauthConnectionId, syncMode) => {
-      calls.updateSyncMode.push({ oauthConnectionId, syncMode });
-      if (overrides.updateSyncMode) return overrides.updateSyncMode(oauthConnectionId, syncMode);
-      return { oauth_connection_id: oauthConnectionId, sync_mode: syncMode };
-    },
     // EM5 — ensureManagedLabel's lazy-backfill write path.
     updateManagedLabelId: async (oauthConnectionId, managedLabelId) => {
       calls.updateManagedLabelId.push({ oauthConnectionId, managedLabelId });
@@ -235,14 +216,6 @@ function makeFakes(overrides = {}) {
       calls.updateLiveLookupEnabled.push({ oauthConnectionId, enabled });
       if (overrides.updateLiveLookupEnabled) return overrides.updateLiveLookupEnabled(oauthConnectionId, enabled);
       return { oauth_connection_id: oauthConnectionId, live_lookup_enabled: enabled };
-    },
-  };
-
-  const emailPolicyService = {
-    getSettings: async (clientId) => {
-      calls.getSettings.push(clientId);
-      if (overrides.getSettings) return overrides.getSettings(clientId);
-      return { automaticSyncEnabled: false, updatedByMemberId: null, updatedAt: null };
     },
   };
 
@@ -263,7 +236,7 @@ function makeFakes(overrides = {}) {
   };
 
   const service = createEmailConnectionService({
-    oauthStateService, gmailService, oauthConnectionsService, supabaseService, emailConnectionsRepo, emailPolicyService, aikbService,
+    oauthStateService, gmailService, oauthConnectionsService, supabaseService, emailConnectionsRepo, aikbService,
   });
   return { service, calls, connectionsStore };
 }
@@ -620,29 +593,6 @@ test('getConnections returns only the caller\'s own connection by default (no ad
   assert.equal(result.connections[0].memberId, 'member-a');
 });
 
-test('getConnections (EM8) surfaces nextSyncDueAt for an automatic-mode connection, but never queries it for a manual_selected one', async () => {
-  const { service, connectionsStore, calls } = makeFakes({
-    getByOauthConnectionId: async (oauthConnectionId) => ({
-      oauth_connection_id: oauthConnectionId, mailbox_address: 'a@x.com', sync_mode: 'automatic', sync_enabled: true,
-    }),
-    getNextSyncDueAt: async () => '2026-07-25T13:00:00.000Z',
-  });
-  connectionsStore.set('conn-a', { id: 'conn-a', client_id: 'client-a', provider: 'gmail', connected_by_member_id: 'member-a', status: 'active', connected_at: '2026-07-23T00:00:00Z' });
-
-  const result = await service.getConnections({ clientId: 'client-a', memberId: 'member-a', isOwnerAdmin: false, all: false });
-  assert.equal(result.connections[0].nextSyncDueAt, '2026-07-25T13:00:00.000Z');
-  assert.equal(calls.getNextSyncDueAt.length, 1);
-});
-
-test('getConnections never calls getNextSyncDueAt for a manual_selected connection', async () => {
-  const { service, connectionsStore, calls } = makeFakes(); // default fixture: sync_mode 'manual_selected'
-  connectionsStore.set('conn-a', { id: 'conn-a', client_id: 'client-a', provider: 'gmail', connected_by_member_id: 'member-a', status: 'active', connected_at: '2026-07-23T00:00:00Z' });
-
-  const result = await service.getConnections({ clientId: 'client-a', memberId: 'member-a', isOwnerAdmin: false, all: false });
-  assert.equal(result.connections[0].nextSyncDueAt, null);
-  assert.equal(calls.getNextSyncDueAt.length, 0);
-});
-
 test('getConnections returns an empty list when the caller has no connection', async () => {
   const { service } = makeFakes({ getActiveConnectionForClientAndMember: async () => null });
   const result = await service.getConnections({ clientId: 'client-a', memberId: 'member-a', isOwnerAdmin: false, all: false });
@@ -829,52 +779,11 @@ test('canDisconnectConnection denies when actingMemberId is missing, even if a c
   assert.equal(canDisconnectConnection({ connection, actingMemberId: undefined }), false);
 });
 
-// ─────────────────────────────────────────────
-// updateSyncMode (EM4 — §14.1 POST /connections/:id/sync-mode)
-// ─────────────────────────────────────────────
-
-test('updateSyncMode sets manual_selected without ever consulting org automatic-sync settings', async () => {
-  const { service, calls } = makeFakes();
-  const result = await service.updateSyncMode({ clientId: 'client-a', oauthConnectionId: 'conn-1', syncMode: 'manual_selected' });
-  assert.deepEqual(result, { syncMode: 'manual_selected' });
-  assert.equal(calls.getSettings.length, 0);
-  assert.equal(calls.updateSyncMode.length, 1);
-  assert.deepEqual(calls.updateSyncMode[0], { oauthConnectionId: 'conn-1', syncMode: 'manual_selected' });
-});
-
-test('updateSyncMode allows automatic when the org has automatic_sync_enabled on', async () => {
-  const { service, calls } = makeFakes({ getSettings: async () => ({ automaticSyncEnabled: true }) });
-  const result = await service.updateSyncMode({ clientId: 'client-a', oauthConnectionId: 'conn-1', syncMode: 'automatic' });
-  assert.deepEqual(result, { syncMode: 'automatic' });
-  assert.equal(calls.getSettings.length, 1);
-  assert.equal(calls.updateSyncMode.length, 1);
-});
-
-test('updateSyncMode rejects automatic with AUTOMATIC_SYNC_DISABLED when the org setting is off, without writing anything', async () => {
-  const { service, calls } = makeFakes({ getSettings: async () => ({ automaticSyncEnabled: false }) });
-  await assert.rejects(
-    () => service.updateSyncMode({ clientId: 'client-a', oauthConnectionId: 'conn-1', syncMode: 'automatic' }),
-    (err) => err.code === 'AUTOMATIC_SYNC_DISABLED'
-  );
-  assert.equal(calls.updateSyncMode.length, 0);
-});
-
-test('updateSyncMode rejects an unsupported syncMode value (e.g. "paused" — reached only via a separate pause control, not this route)', async () => {
-  const { service, calls } = makeFakes();
-  await assert.rejects(
-    () => service.updateSyncMode({ clientId: 'client-a', oauthConnectionId: 'conn-1', syncMode: 'paused' }),
-    (err) => err.code === 'INVALID_SYNC_MODE'
-  );
-  assert.equal(calls.updateSyncMode.length, 0);
-});
-
-test('updateSyncMode surfaces CONNECTION_NOT_FOUND when no email_connections row matches the oauth connection id', async () => {
-  const { service } = makeFakes({ updateSyncMode: async () => null });
-  await assert.rejects(
-    () => service.updateSyncMode({ clientId: 'client-a', oauthConnectionId: 'conn-missing', syncMode: 'manual_selected' }),
-    (err) => err.code === 'CONNECTION_NOT_FOUND'
-  );
-});
+// EM10.6 removed updateSyncMode (POST /connections/:id/sync-mode) along
+// with Automatic Email Ingestion itself — a connection's sync_mode is no
+// longer a member choice between modes; see EMAIL_INGESTION.md's EM10.6
+// record and pauseConnection/resumeConnection's own tests below for the
+// only remaining sync_mode writes.
 
 // ─────────────────────────────────────────────
 // pauseConnection / resumeConnection (EM8 — §14.1 POST .../pause | /resume,
@@ -883,12 +792,12 @@ test('updateSyncMode surfaces CONNECTION_NOT_FOUND when no email_connections row
 
 test('pauseConnection remembers the connection\'s CURRENT sync_mode before overwriting it to paused', async () => {
   const { service, calls } = makeFakes({
-    getByOauthConnectionId: async (oauthConnectionId) => ({ oauth_connection_id: oauthConnectionId, sync_mode: 'automatic', pre_pause_sync_mode: null }),
+    getByOauthConnectionId: async (oauthConnectionId) => ({ oauth_connection_id: oauthConnectionId, sync_mode: 'manual_selected', pre_pause_sync_mode: null }),
   });
   const result = await service.pauseConnection({ clientId: 'client-a', oauthConnectionId: 'conn-1' });
   assert.deepEqual(result, { syncMode: 'paused' });
   assert.equal(calls.pauseConnection.length, 1);
-  assert.deepEqual(calls.pauseConnection[0], { oauthConnectionId: 'conn-1', priorSyncMode: 'automatic' });
+  assert.deepEqual(calls.pauseConnection[0], { oauthConnectionId: 'conn-1', priorSyncMode: 'manual_selected' });
 });
 
 test('pauseConnection on an already-paused connection is a no-op — never overwrites pre_pause_sync_mode with "paused" itself', async () => {
@@ -910,11 +819,20 @@ test('pauseConnection surfaces CONNECTION_NOT_FOUND when no email_connections ro
 
 test('resumeConnection restores the exact prior mode recorded by pauseConnection', async () => {
   const { service, calls } = makeFakes({
+    getByOauthConnectionId: async (oauthConnectionId) => ({ oauth_connection_id: oauthConnectionId, sync_mode: 'paused', pre_pause_sync_mode: 'manual_selected' }),
+  });
+  const result = await service.resumeConnection({ clientId: 'client-a', oauthConnectionId: 'conn-1' });
+  assert.deepEqual(result, { syncMode: 'manual_selected' });
+  assert.deepEqual(calls.resumeConnection[0], { oauthConnectionId: 'conn-1', restoredSyncMode: 'manual_selected' });
+});
+
+test('resumeConnection defaults to manual_selected when pre_pause_sync_mode is an unrecognized/legacy value (e.g. "automatic" — removed in EM10.6, SYNC_MODES.includes() now falls through)', async () => {
+  const { service, calls } = makeFakes({
     getByOauthConnectionId: async (oauthConnectionId) => ({ oauth_connection_id: oauthConnectionId, sync_mode: 'paused', pre_pause_sync_mode: 'automatic' }),
   });
   const result = await service.resumeConnection({ clientId: 'client-a', oauthConnectionId: 'conn-1' });
-  assert.deepEqual(result, { syncMode: 'automatic' });
-  assert.deepEqual(calls.resumeConnection[0], { oauthConnectionId: 'conn-1', restoredSyncMode: 'automatic' });
+  assert.deepEqual(result, { syncMode: 'manual_selected' });
+  assert.deepEqual(calls.resumeConnection[0], { oauthConnectionId: 'conn-1', restoredSyncMode: 'manual_selected' });
 });
 
 test('resumeConnection defaults to manual_selected when pre_pause_sync_mode is unset (e.g. paused before this migration existed)', async () => {
@@ -972,24 +890,14 @@ test('mapGmailConnectionResponse allowlists exactly the documented fields', () =
     syncMode: 'manual_selected',
     syncEnabled: true,
     historicalImportStatus: 'not_started',
-    nextSyncDueAt: null,
     status: 'active',
     connectedAt: '2026-07-23T00:00:00Z',
   });
 });
 
-test('mapGmailConnectionResponse (EM8) includes nextSyncDueAt only for an automatic-mode connection', () => {
-  const connectionRow = { id: 'conn-1', connected_by_member_id: 'member-a', status: 'active', connected_at: '2026-07-23T00:00:00Z' };
-  const automaticConnection = { mailbox_address: 'a@x.com', sync_mode: 'automatic', sync_enabled: true };
-  const manualConnection = { mailbox_address: 'a@x.com', sync_mode: 'manual_selected', sync_enabled: true };
-
-  const automaticMapped = mapGmailConnectionResponse(connectionRow, automaticConnection, '2026-07-25T13:00:00.000Z');
-  assert.equal(automaticMapped.nextSyncDueAt, '2026-07-25T13:00:00.000Z');
-
-  // The caller passed a value, but sync_mode is manual — must still be null.
-  const manualMapped = mapGmailConnectionResponse(connectionRow, manualConnection, '2026-07-25T13:00:00.000Z');
-  assert.equal(manualMapped.nextSyncDueAt, null);
-});
+// EM10.6 removed nextSyncDueAt from this response shape along with
+// Automatic Email Ingestion itself (it was meaningful only for
+// automatic-mode connections) — see EMAIL_INGESTION.md's EM10.6 record.
 
 test('mapGmailConnectionResponse never includes any credential-related field', () => {
   const connectionRow = {

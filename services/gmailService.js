@@ -206,50 +206,21 @@ function extractBodyParts(payload) {
 
 /**
  * Compiles a Gmail search-query string (`q` param, §10) for a preview/
- * historical-import candidate list. Pure — no network access.
+ * historical-import candidate list. Pure — no network access. Always
+ * exactly `label:Relativity/Knowledge -in:chats` (§17 item 2 — "the query
+ * is simply label:Relativity/Knowledge... the label, not a date window, is
+ * the primary selection criterion"). Policy (allow/deny) is deliberately
+ * NOT folded into this query string — it is re-verified locally per
+ * candidate message instead (§10 item 4's defense-in-depth pattern), the
+ * same division of labor historical import (EM6) reuses.
  *
- * `manual_selected`: always exactly `label:Relativity/Knowledge -in:chats`
- * (§17 item 2 — "the query is simply label:Relativity/Knowledge... the
- * label, not a date window, is the primary selection criterion"). Policy
- * (allow/deny) is deliberately NOT folded into this query string — it is
- * re-verified locally per candidate message instead (§10 item 4's defense-
- * in-depth pattern: "deny-list criteria are still re-verified locally in
- * both modes"), the same division of labor historical import (EM6) will
- * reuse. See the EM5 Implementation Record for why this resolves in favor
- * of §17's literal query text over §14.1's looser one-line paraphrase.
- *
- * `automatic`: OR's together one clause per enabled allow rule (deny rules
- * are never compiled into the query, same local-only reasoning as above —
- * negating a Gmail query clause per deny rule is fragile to compose
- * correctly, and the local check already re-verifies it). A rule
- * contributes only its `labelOrFolder`/`senderPattern` criteria (the two
- * MVP fields exposed by the rule-builder UI, §16.1) — `subjectKeyword`/
- * `recipientPattern` are evaluated locally only (see emailPreviewService.js
- * for why). A rule with neither compilable field contributes nothing.
- * Returns `null` when the compiled query would match nothing (zero enabled
- * allow rules, or none with a compilable field) — callers must treat a
- * `null` query as "skip the provider call, zero candidates," not "list
- * everything" (§16.1 item 6's fail-closed guarantee applies here too).
+ * EM10.6 — Automatic Email Ingestion's rule-compiled query branch (which
+ * OR'd together one clause per enabled allow rule, with no label) was
+ * removed; this is now the single supported query shape. See
+ * EMAIL_INGESTION.md's EM10.6 record.
  */
-function compileSearchQuery({ mode, rules }) {
-  if (mode === 'manual_selected') {
-    return `label:${MANAGED_LABEL_NAME} -in:chats`;
-  }
-
-  const allowClauses = (rules || [])
-    .filter((r) => r.enabled !== false && r.ruleType === 'allow')
-    .map((r) => {
-      const terms = [];
-      if (r.labelOrFolder) terms.push(`label:${r.labelOrFolder}`);
-      if (r.senderPattern) terms.push(`from:${r.senderPattern}`);
-      return terms.length ? terms.join(' ') : null;
-    })
-    .filter(Boolean);
-
-  if (allowClauses.length === 0) return null;
-
-  const orred = allowClauses.length === 1 ? allowClauses[0] : allowClauses.map((c) => `(${c})`).join(' OR ');
-  return `${orred} -in:chats`;
+function compileSearchQuery() {
+  return `label:${MANAGED_LABEL_NAME} -in:chats`;
 }
 
 /**
@@ -637,25 +608,24 @@ function createGmailService({ httpClient = axios } = {}) {
   }
 
   /**
-   * `users.history.list` (EM7 — §18, §18.4; EM8 — §18.3 extends this to
-   * automatic mode): reads what changed since `startHistoryId`. Two shapes,
-   * selected by the caller via `historyTypes`/`labelId`, never decided in
-   * here:
-   *   - manual mode (default `historyTypes`, `labelId` set): filtered by Gmail
-   *     to messages associated with the managed label — but NOT scoped to
-   *     changes of that specific label. A `labelsRemoved` record in this feed
-   *     can name a completely different label (most commonly `UNREAD`,
-   *     removed simply by opening the message in Gmail) bundled alongside a
-   *     message that also happens to carry the managed label. Every
-   *     `labelRemoved` change below therefore carries its own `labelIds` so
-   *     the caller can check WHICH label was actually removed before treating
-   *     it as "the managed label was removed" (EM10.5 Scenario 3 regression —
-   *     §24.2 previously assumed this filtering was already exact).
-   *     `labelAdded`/`labelRemoved`/`messageDeleted`.
-   *   - automatic mode (`historyTypes: ['messageAdded']`, no `labelId`):
-   *     unscoped — any new message anywhere in the mailbox, since automatic
-   *     mode has no label to scope by and relies on organization policy
-   *     alone (§16.1 item 3).
+   * `users.history.list` (EM7 — §18, §18.4): reads what changed since
+   * `startHistoryId`, filtered by Gmail (`labelId`) to messages associated
+   * with the managed label — but NOT scoped to changes of that specific
+   * label. A `labelsRemoved` record in this feed can name a completely
+   * different label (most commonly `UNREAD`, removed simply by opening the
+   * message in Gmail) bundled alongside a message that also happens to
+   * carry the managed label. Every `labelRemoved` change below therefore
+   * carries its own `labelIds` so the caller can check WHICH label was
+   * actually removed before treating it as "the managed label was removed"
+   * (EM10.5 Scenario 3 regression — §24.2 previously assumed this filtering
+   * was already exact). Reports `labelAdded`/`labelRemoved`/`messageDeleted`.
+   *
+   * EM10.6 — Automatic Email Ingestion's unscoped `historyTypes:
+   * ['messageAdded']` shape (no `labelId`, any new message anywhere in the
+   * mailbox) was removed along with automatic mode itself; this is now the
+   * only shape this function produces. See EMAIL_INGESTION.md's EM10.6
+   * record.
+   *
    * Returns a flat, ORDER-PRESERVING list of `{type, messageId}` changes
    * (`labelRemoved` additionally carries `labelIds: string[]`, the actual
    * label(s) removed in that entry, defaulting to `[]` if Gmail's response
@@ -670,17 +640,14 @@ function createGmailService({ httpClient = axios } = {}) {
    * treat this as "fall back to a bounded historical re-scan," never a
    * generic failure (§18.4).
    */
-  async function listHistory({ accessToken, startHistoryId, labelId, historyTypes, pageToken, maxResults = 50 }) {
+  async function listHistory({ accessToken, startHistoryId, labelId, pageToken, maxResults = 50 }) {
     if (!accessToken) throw new Error('listHistory requires accessToken');
     if (!startHistoryId) throw new Error('listHistory requires startHistoryId');
 
-    // historyTypes defaults to the manual-mode shape (label-scoped
-    // added/removed + deletions, §18.2). EM8's automatic mode passes
-    // ['messageAdded'] instead — no managed label is relevant to automatic
-    // mode (§16.1 item 3), so the signal it needs is "any new message
-    // arrived in the mailbox," not "a label changed" — and correspondingly
-    // never sets labelId (the caller simply omits it).
-    const types = (historyTypes && historyTypes.length) ? historyTypes : ['labelAdded', 'labelRemoved', 'messageDeleted'];
+    // Label-scoped added/removed + deletions (§18.2) — the only shape this
+    // function produces since EM10.6 removed automatic mode's unscoped
+    // messageAdded shape.
+    const types = ['labelAdded', 'labelRemoved', 'messageDeleted'];
     const params = new URLSearchParams({ startHistoryId: String(startHistoryId), maxResults: String(maxResults) });
     for (const type of types) params.append('historyTypes', type);
     if (labelId) params.set('labelId', labelId);
@@ -717,14 +684,6 @@ function createGmailService({ httpClient = axios } = {}) {
       for (const entry of record.messagesDeleted || []) {
         const messageId = entry.message && entry.message.id;
         if (messageId) changes.push({ type: 'messageDeleted', messageId });
-      }
-      // Automatic mode only (EM8) — a brand-new message anywhere in the
-      // mailbox, unscoped by any label. Gmail's response field is the
-      // plural `messagesAdded`, mirroring `messagesDeleted` above; the
-      // singular `messageAdded` is only the historyTypes request-param value.
-      for (const entry of record.messagesAdded || []) {
-        const messageId = entry.message && entry.message.id;
-        if (messageId) changes.push({ type: 'messageAdded', messageId });
       }
     }
 

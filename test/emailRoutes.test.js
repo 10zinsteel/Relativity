@@ -41,57 +41,11 @@ test('Email integration routes — auth gating and safe callback redirects', asy
   const base = `http://127.0.0.1:${server.address().port}`;
   t.after(() => new Promise((resolve) => server.close(resolve)));
 
-  // EM8 — POST /sync/tick (§18.3, §31). System-scoped, NOT clientAuth —
-  // mirrors test/slackEventsRoutes.test.js's own no-envelope/forged-
-  // signature pattern for POST /deliver exactly, since both routes are
-  // gated by the same HMAC service-request mechanism (services/
-  // serviceRequestAuth.js), just the system-scoped variant here. A
-  // successfully-authenticated call would reach emailSyncService.runTick,
-  // which hits the real Supabase client — outside this file's no-real-
-  // network-call convention, so (like every other route here) the actual
-  // fan-out/failure-isolation logic is covered via DI'd unit tests instead
-  // (test/emailSyncService.test.js's runTick suite).
-  await t.test('POST /api/integrations/email/sync/tick with no service-request envelope is rejected', async () => {
-    const res = await fetch(`${base}/api/integrations/email/sync/tick`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({}),
-      redirect: 'manual',
-    });
-    assert.equal(res.status, 401);
-  });
-
-  await t.test('POST /api/integrations/email/sync/tick with a forged signature is rejected', async () => {
-    const res = await fetch(`${base}/api/integrations/email/sync/tick`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        requestId: 'x', issuedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 60000).toISOString(),
-        idempotencyKey: 'email-sync-tick:x', signature: 'forged', payload: {},
-      }),
-      redirect: 'manual',
-    });
-    assert.equal(res.status, 401);
-  });
-
-  // A system envelope must never be accepted by a clientId-scoped route —
-  // confirms requireSystemServiceRequest and requireServiceRequest really
-  // are two separate, non-interchangeable gates, not one gate with an
-  // optional field.
-  await t.test('POST /api/integrations/email/sync/tick with a clientId-scoped (not system-scoped) envelope is rejected', async () => {
-    const { signServiceRequest } = require('../services/serviceRequestAuth');
-    const envelope = signServiceRequest({
-      clientId: 'client-1', idempotencyKey: 'email-sync-tick:x', payload: {},
-      secret: process.env.SERVICE_REQUEST_SIGNING_SECRET,
-    });
-    const res = await fetch(`${base}/api/integrations/email/sync/tick`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...envelope, payload: {} }),
-      redirect: 'manual',
-    });
-    assert.equal(res.status, 401);
-  });
+  // EM10.6 removed POST /sync/tick along with Automatic Email Ingestion
+  // itself — see EMAIL_INGESTION.md's EM10.6 record. The system-scoped
+  // envelope mechanism it used (requireSystemServiceRequest/
+  // serviceRequestAuth.js) remains — it's shared infrastructure, still used
+  // by POST /api/tools/execute — but this route no longer exists.
 
   await t.test('GET /api/integrations/email/gmail/start requires authentication', async () => {
     const res = await fetch(`${base}/api/integrations/email/gmail/start`, { redirect: 'manual' });
@@ -138,32 +92,24 @@ test('Email integration routes — auth gating and safe callback redirects', asy
     const res = await fetch(`${base}/api/integrations/email/settings`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ automaticSyncEnabled: true }),
+      body: JSON.stringify({ liveLookupEnabled: true }),
       redirect: 'manual',
     });
     assert.equal(res.status, 401);
   });
 
-  // EM4 — member mailbox settings routes (§14.1, §31). Sync-mode's
-  // additional owns-this-connection gate (reusing canDisconnectConnection)
-  // and member-settings' self-service-only scope run only after clientAuth
-  // succeeds, so — same limitation this file's header comment already
-  // documents for disconnect's and PUT /policy|/settings's role gates —
-  // they aren't exercised here without a real authenticated session; that
-  // coverage lives in test/emailConnectionService.test.js instead.
-  await t.test('POST /api/integrations/email/connections/:id/sync-mode requires authentication', async () => {
-    const res = await fetch(`${base}/api/integrations/email/connections/conn-1/sync-mode`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ syncMode: 'automatic' }),
-      redirect: 'manual',
-    });
-    assert.equal(res.status, 401);
-  });
+  // EM4 — member mailbox settings routes (§14.1, §31). member-settings'
+  // self-service-only scope runs only after clientAuth succeeds, so — same
+  // limitation this file's header comment already documents for
+  // disconnect's and PUT /policy|/settings's role gates — it isn't
+  // exercised here without a real authenticated session; that coverage
+  // lives in test/emailConnectionService.test.js instead. (EM10.6 removed
+  // POST /connections/:id/sync-mode along with Automatic Email Ingestion
+  // itself — see EMAIL_INGESTION.md's EM10.6 record.)
 
   // EM8 — pause/resume (§14.1, §Lifecycle "Paused", §31). Same limitation
-  // as sync-mode above: the owns-this-connection gate runs only after
-  // clientAuth succeeds; see test/emailConnectionService.test.js for
+  // as above: the owns-this-connection gate runs only after clientAuth
+  // succeeds; see test/emailConnectionService.test.js for
   // pauseConnection/resumeConnection's own DI-faked coverage.
   await t.test('POST /api/integrations/email/connections/:id/pause requires authentication', async () => {
     const res = await fetch(`${base}/api/integrations/email/connections/conn-1/pause`, { method: 'POST', redirect: 'manual' });
@@ -211,7 +157,7 @@ test('Email integration routes — auth gating and safe callback redirects', asy
   });
 
   // EM5 — label-query dry-run preview (§14.1, §17, §31). Same limitation as
-  // sync-mode/disconnect above: the owns-this-connection gate and the live
+  // disconnect above: the owns-this-connection gate and the live
   // Gmail-call path (getValidGmailAccessToken/ensureManagedLabel/buildPreview)
   // run only after clientAuth succeeds, so they aren't exercised here; see
   // test/emailConnectionService.test.js and test/emailPreviewService.test.js.

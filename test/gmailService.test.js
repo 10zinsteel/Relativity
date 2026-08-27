@@ -464,47 +464,11 @@ test('extractEmailAddress returns null for an unparseable or missing value', () 
 // compileSearchQuery — pure (§10, §17, §14.1)
 // ─────────────────────────────────────────────
 
-test('compileSearchQuery for manual_selected mode is always exactly label:Relativity/Knowledge -in:chats, regardless of policy rules', () => {
-  const rules = [{ ruleType: 'allow', labelOrFolder: 'finance', enabled: true }];
-  assert.equal(compileSearchQuery({ mode: 'manual_selected', rules }), 'label:Relativity/Knowledge -in:chats');
-  assert.equal(compileSearchQuery({ mode: 'manual_selected', rules: [] }), 'label:Relativity/Knowledge -in:chats');
-});
-
-test('compileSearchQuery for automatic mode ORs together each enabled allow rule\'s label/sender criteria', () => {
-  const rules = [
-    { ruleType: 'allow', enabled: true, labelOrFolder: 'finance', senderPattern: null },
-    { ruleType: 'allow', enabled: true, labelOrFolder: null, senderPattern: '@client.com' },
-  ];
-  const query = compileSearchQuery({ mode: 'automatic', rules });
-  assert.equal(query, '(label:finance) OR (from:@client.com) -in:chats');
-});
-
-test('compileSearchQuery for automatic mode never compiles deny rules into the query (deny is local-only, §10 item 4)', () => {
-  const rules = [
-    { ruleType: 'allow', enabled: true, labelOrFolder: 'finance' },
-    { ruleType: 'deny', enabled: true, labelOrFolder: 'finance/payroll' },
-  ];
-  const query = compileSearchQuery({ mode: 'automatic', rules });
-  assert.equal(query.includes('payroll'), false);
-});
-
-test('compileSearchQuery for automatic mode skips disabled allow rules', () => {
-  const rules = [
-    { ruleType: 'allow', enabled: false, labelOrFolder: 'finance' },
-    { ruleType: 'allow', enabled: true, senderPattern: '@client.com' },
-  ];
-  const query = compileSearchQuery({ mode: 'automatic', rules });
-  assert.equal(query, 'from:@client.com -in:chats');
-});
-
-test('compileSearchQuery for automatic mode returns null when there are zero enabled allow rules (fail-closed, §16.1 item 6) — callers must not list the whole mailbox', () => {
-  assert.equal(compileSearchQuery({ mode: 'automatic', rules: [] }), null);
-  assert.equal(compileSearchQuery({ mode: 'automatic', rules: [{ ruleType: 'deny', enabled: true, labelOrFolder: 'x' }] }), null);
-});
-
-test('compileSearchQuery for automatic mode returns null when every allow rule has neither a compilable label nor sender criterion (e.g. subject-only rules, not query-compilable in the MVP)', () => {
-  const rules = [{ ruleType: 'allow', enabled: true, labelOrFolder: null, senderPattern: null, subjectKeyword: 'invoice' }];
-  assert.equal(compileSearchQuery({ mode: 'automatic', rules }), null);
+// EM10.6 removed Automatic Email Ingestion's rule-compiled query branch —
+// compileSearchQuery is now a niladic function that always returns the
+// fixed label query. See EMAIL_INGESTION.md's EM10.6 record.
+test('compileSearchQuery is always exactly label:Relativity/Knowledge -in:chats', () => {
+  assert.equal(compileSearchQuery(), 'label:Relativity/Knowledge -in:chats');
 });
 
 // ─────────────────────────────────────────────
@@ -660,7 +624,7 @@ test('getMailboxHistoryId requires accessToken', async () => {
   await assert.rejects(() => service.getMailboxHistoryId());
 });
 
-test('listHistory passes startHistoryId/labelId/pageToken and requests labelAdded+labelRemoved+messageDeleted history types by default (manual mode shape)', async () => {
+test('listHistory passes startHistoryId/labelId/pageToken and requests labelAdded+labelRemoved+messageDeleted history types', async () => {
   let capturedUrl;
   const httpClient = {
     get: async (url) => { capturedUrl = url; return { status: 200, data: { history: [], historyId: '999' } }; },
@@ -675,19 +639,6 @@ test('listHistory passes startHistoryId/labelId/pageToken and requests labelAdde
   assert.match(capturedUrl, /historyTypes=labelAdded/);
   assert.match(capturedUrl, /historyTypes=labelRemoved/);
   assert.match(capturedUrl, /historyTypes=messageDeleted/);
-});
-
-test('listHistory (EM8, automatic mode): an explicit historyTypes override requests only that type, and omitting labelId leaves it out of the request entirely', async () => {
-  let capturedUrl;
-  const httpClient = {
-    get: async (url) => { capturedUrl = url; return { status: 200, data: { history: [], historyId: '999' } }; },
-  };
-  const service = createGmailService({ httpClient });
-  await service.listHistory({ accessToken: 'token', startHistoryId: '100', historyTypes: ['messageAdded'] });
-  const historyTypeMatches = capturedUrl.match(/historyTypes=/g) || [];
-  assert.equal(historyTypeMatches.length, 1);
-  assert.match(capturedUrl, /historyTypes=messageAdded/);
-  assert.doesNotMatch(capturedUrl, /labelId=/);
 });
 
 test('listHistory flattens labelsAdded/labelsRemoved/messagesDeleted into an ordered {type, messageId} change list', async () => {
@@ -740,7 +691,7 @@ test('listHistory preserves labelIds on a labelsRemoved entry so callers can tel
   ]);
 });
 
-test('listHistory (EM8) flattens messagesAdded records into {type: messageAdded, messageId} — the automatic-mode signal', async () => {
+test('listHistory ignores a messagesAdded record — Automatic Email Ingestion\'s unscoped signal was removed in EM10.6; only labelAdded/labelRemoved/messageDeleted are ever reported now', async () => {
   const httpClient = {
     get: async () => ({
       status: 200,
@@ -754,9 +705,8 @@ test('listHistory (EM8) flattens messagesAdded records into {type: messageAdded,
     }),
   };
   const service = createGmailService({ httpClient });
-  const result = await service.listHistory({ accessToken: 'token', startHistoryId: '100', historyTypes: ['messageAdded'] });
+  const result = await service.listHistory({ accessToken: 'token', startHistoryId: '100' });
   assert.deepEqual(result.changes, [
-    { type: 'messageAdded', messageId: 'm1' },
     { type: 'labelAdded', messageId: 'm2' },
   ]);
 });

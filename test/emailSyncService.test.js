@@ -131,7 +131,6 @@ function fixtureAikbService({ documents = [], failIngestFor = new Set(), calls =
 
 function fixtureEmailSyncRepo({
   previouslyIngested = [], initialSyncState = null,
-  dueConnections = [], memberSearchEnabledByMemberId = {},
 } = {}) {
   const runs = new Map();
   const events = [];
@@ -184,13 +183,6 @@ function fixtureEmailSyncRepo({
         .filter((r) => r.emailConnectionId === emailConnectionId)
         .slice(0, limit);
     },
-    // EM8 — runTick's own gates.
-    getMemberSearchEnabled: async (memberId) => (
-      Object.prototype.hasOwnProperty.call(memberSearchEnabledByMemberId, memberId)
-        ? memberSearchEnabledByMemberId[memberId]
-        : true
-    ),
-    listDueAutomaticConnections: async (maxConnections) => dueConnections.slice(0, maxConnections),
   };
 }
 
@@ -237,10 +229,6 @@ test('assertSyncAllowed throws SYNC_PAUSED for a paused connection', () => {
   );
 });
 
-test('assertSyncAllowed does not throw for a healthy automatic-mode connection (EM8 — automatic sync is now supported)', () => {
-  assert.doesNotThrow(() => assertSyncAllowed({ memberSearchEnabled: true, syncEnabled: true, syncMode: 'automatic' }));
-});
-
 test('assertSyncAllowed does not throw for a healthy manual_selected connection', () => {
   assert.doesNotThrow(() => assertSyncAllowed({ memberSearchEnabled: true, syncEnabled: true, syncMode: 'manual_selected' }));
 });
@@ -257,24 +245,6 @@ test('syncConnection rejects before any Gmail call when search_enabled is false'
     (err) => err.code === ERROR_CODES.SEARCH_DISABLED
   );
   assert.equal(gmailCalls.listMessageIdsByQuery, undefined);
-});
-
-test('syncConnection runs a historical sync for an automatic-mode connection (EM8) using the policy-compiled query, not the manual label query — and never requires the member\'s own Gmail label', async () => {
-  // Message carries the org's "finance" label (matching ALLOW_FINANCE's
-  // labelOrFolder) but NOT the member's own managed Relativity/Knowledge
-  // label — proving automatic mode's eligibility never depends on it.
-  const pages = [{ messages: [{ id: 'm1', subject: 'Invoice', fromAddress: 'ap@vendor.com', labelIds: ['Label_finance'] }] }];
-  const gmailCalls = {};
-  const { service } = makeService({ pages, rules: [ALLOW_FINANCE], gmailCalls, bodies: { m1: { text: 'Invoice body.' } } });
-  const result = await service.syncConnection({
-    clientId: 'c1',
-    emailConnectionRow: fixtureConnection({ sync_mode: 'automatic', managed_label_id: null }),
-    memberSearchEnabled: true,
-    accessToken: 't',
-  });
-  assert.equal(result.status, 'completed');
-  assert.equal(result.imported.length, 1);
-  assert.equal(gmailCalls.listMessageIdsByQuery[0].query, 'label:finance -in:chats');
 });
 
 test('syncConnection rejects when the client is already at the document limit, before creating a sync run or any Gmail call', async () => {
@@ -653,25 +623,6 @@ test('policy-change reconciliation: a previously-ingested message that STILL mat
 
   const result = await service.syncConnection({ clientId: 'client-a', emailConnectionRow: fixtureConnection(), memberSearchEnabled: true, accessToken: 't' });
   assert.equal(result.reconciled.length, 0);
-});
-
-test('policy-change reconciliation runs for automatic-mode connections too, unlike label-removal reconciliation', async () => {
-  const pages = [{ messages: [], nextPageToken: null }];
-  const documents = [{ id: 'doc-old', source_provider: 'gmail', source_file_id: 'old-msg', status: 'indexed' }];
-  const extraMessages = [{
-    id: 'old-msg', subject: 'Payroll run', fromAddress: 'hr@client.com',
-    labelIds: ['Label_payroll'], // automatic mode never consults the label at all
-  }];
-  const { service } = makeService({
-    pages, rules: [ALLOW_FINANCE, DENY_PAYROLL], documents, previouslyIngested: ['old-msg'], extraMessages,
-  });
-
-  const result = await service.syncConnection({
-    clientId: 'client-a', emailConnectionRow: fixtureConnection({ sync_mode: 'automatic' }), memberSearchEnabled: true, accessToken: 't',
-  });
-
-  assert.equal(result.reconciled.length, 1);
-  assert.equal(result.reconciled[0].messageId, 'old-msg');
 });
 
 test('policy-change reconciliation: a re-fetch failure for one candidate is skipped, not thrown — the sync still completes', async () => {
@@ -1070,209 +1021,8 @@ test('listSyncRuns returns the connection\'s recent sync runs, newest first, as 
   assert.equal(runs[0].emailConnectionId, conn.id);
 });
 
-// ─────────────────────────────────────────────
-// EM8 — automatic mode's incremental path (§18.3): messageAdded, no
-// managed-label scoping, no label-removal reconciliation, and
-// next_sync_due_at bookkeeping.
-// ─────────────────────────────────────────────
 
-test('a fresh sync with a valid stored cursor on an AUTOMATIC-mode connection runs incremental scoped to historyTypes: [messageAdded], with no labelId at all', async () => {
-  const gmailCalls = {};
-  const { service } = makeService({
-    pages: [], rules: [ALLOW_FINANCE], gmailCalls,
-    initialSyncState: { cursor_status: 'valid', provider_cursor: '100' },
-    historyPages: [{ changes: [], historyId: '150', nextPageToken: null }],
-  });
-  const result = await service.syncConnection({
-    clientId: 'client-a',
-    // managed_label_id is still set here (as a real connect-time label
-    // would be) — proving automatic mode ignores it entirely, not merely
-    // that it's absent.
-    emailConnectionRow: fixtureConnection({ sync_mode: 'automatic' }),
-    memberSearchEnabled: true, accessToken: 't',
-  });
-  assert.equal(result.runType, 'incremental');
-  assert.deepEqual(gmailCalls.listHistory[0].historyTypes, ['messageAdded']);
-  assert.equal(gmailCalls.listHistory[0].labelId, undefined);
-});
-
-test('a valid cursor is honored for an automatic-mode connection even with NO managed_label_id at all (manual mode would require one)', async () => {
-  const { service } = makeService({
-    pages: [], rules: [ALLOW_FINANCE],
-    initialSyncState: { cursor_status: 'valid', provider_cursor: '100' },
-    historyPages: [{ changes: [], historyId: '150', nextPageToken: null }],
-  });
-  const result = await service.syncConnection({
-    clientId: 'client-a',
-    emailConnectionRow: fixtureConnection({ sync_mode: 'automatic', managed_label_id: null }),
-    memberSearchEnabled: true, accessToken: 't',
-  });
-  assert.equal(result.runType, 'incremental');
-});
-
-test('automatic-mode incremental: a messageAdded change runs through the full eligibility/ingest pipeline, matched purely on organization policy (no label check)', async () => {
-  const pages = [{ messages: [{ id: 'm1', subject: 'New invoice', fromAddress: 'ap@vendor.com', labelIds: ['Label_finance'] }] }];
-  const aikbCalls = {};
-  const { service } = makeService({
-    pages, rules: [ALLOW_FINANCE], bodies: { m1: { text: 'Invoice body.' } }, aikbCalls,
-    initialSyncState: { cursor_status: 'valid', provider_cursor: '100' },
-    historyPages: [{ changes: [{ type: 'messageAdded', messageId: 'm1' }], historyId: '150', nextPageToken: null }],
-  });
-  const result = await service.syncConnection({
-    clientId: 'client-a', emailConnectionRow: fixtureConnection({ sync_mode: 'automatic' }), memberSearchEnabled: true, accessToken: 't',
-  });
-  assert.equal(result.imported.length, 1);
-  assert.equal(result.imported[0].messageId, 'm1');
-});
-
-test('automatic-mode historical sync does NOT run label-removal reconciliation, even though a managed_label_id is present', async () => {
-  const documents = [{ id: 'doc-old', source_provider: 'gmail', source_file_id: 'old-msg', status: 'indexed' }];
-  const gmailCalls = {};
-  const { service } = makeService({
-    pages: [{ messages: [], nextPageToken: null }], rules: [ALLOW_FINANCE], documents, previouslyIngested: ['old-msg'], gmailCalls,
-  });
-  const result = await service.syncConnection({
-    clientId: 'client-a', emailConnectionRow: fixtureConnection({ sync_mode: 'automatic' }), memberSearchEnabled: true, accessToken: 't',
-  });
-  assert.equal(result.complete, true);
-  assert.equal(result.reconciled.length, 0, 'automatic mode must never tombstone via the manual-mode label-removal reconciliation pass');
-  // Only ever the automatic-mode policy query — never the reconciliation
-  // pass's hardcoded manual_selected label query.
-  for (const call of gmailCalls.listMessageIdsByQuery) {
-    assert.notEqual(call.query, 'label:Relativity/Knowledge -in:chats');
-  }
-});
-
-test('next_sync_due_at is written after a completed automatic-mode sync, but never for a manual_selected connection', async () => {
-  const pages = [{ messages: [], nextPageToken: null }];
-
-  const { service: autoService, emailSyncRepo: autoRepo } = makeService({ pages, rules: [ALLOW_FINANCE] });
-  await autoService.syncConnection({ clientId: 'c1', emailConnectionRow: fixtureConnection({ sync_mode: 'automatic' }), memberSearchEnabled: true, accessToken: 't' });
-  const autoCall = autoRepo._syncStateCalls[autoRepo._syncStateCalls.length - 1];
-  assert.ok(autoCall.nextSyncDueAt, 'automatic-mode completion must set nextSyncDueAt');
-  assert.ok(new Date(autoCall.nextSyncDueAt).getTime() > Date.now(), 'nextSyncDueAt must be in the future');
-
-  const { service: manualService, emailSyncRepo: manualRepo } = makeService({ pages, rules: [ALLOW_FINANCE] });
-  await manualService.syncConnection({ clientId: 'c1', emailConnectionRow: fixtureConnection(), memberSearchEnabled: true, accessToken: 't' });
-  const manualCall = manualRepo._syncStateCalls[manualRepo._syncStateCalls.length - 1];
-  assert.equal(manualCall.nextSyncDueAt, undefined, 'manual_selected must never touch next_sync_due_at');
-});
-
-test('next_sync_due_at is still advanced for an automatic-mode connection even when the sync run fails (so a broken connection is not retried every tick)', async () => {
-  const gmailService = {
-    compileSearchQuery,
-    listMessageIdsByQuery: async () => { throw new Error('simulated Gmail outage'); },
-    listLabels: async () => LABELS,
-    getMessageMetadata: async () => { throw new Error('not used'); },
-    getMessageBody: async () => { throw new Error('not used'); },
-    getMailboxHistoryId: async () => { throw new Error('not used'); },
-    listHistory: async () => { throw new Error('not used'); },
-  };
-  const emailSyncRepo = fixtureEmailSyncRepo();
-  const service = createEmailSyncService({
-    gmailService, emailPolicyService: fixtureEmailPolicyService([ALLOW_FINANCE]), emailNormalizationService: { normalizeEmailBody },
-    aikbService: fixtureAikbService({}), emailSyncRepo, maxDocuments: 50,
-  });
-  const result = await service.syncConnection({
-    clientId: 'c1', emailConnectionRow: fixtureConnection({ sync_mode: 'automatic' }), memberSearchEnabled: true, accessToken: 't',
-  });
-  assert.equal(result.status, 'failed');
-  const lastCall = emailSyncRepo._syncStateCalls[emailSyncRepo._syncStateCalls.length - 1];
-  assert.ok(lastCall.nextSyncDueAt, 'a failed automatic-mode run must still advance nextSyncDueAt');
-});
-
-// ─────────────────────────────────────────────
-// EM8 — runTick (§18.3): the POST /sync/tick orchestration. Constructs
-// createEmailSyncService directly (not via makeService) since these tests
-// need to inject a fake emailConnectionService.getValidGmailAccessToken,
-// which makeService's helper doesn't thread through.
-// ─────────────────────────────────────────────
-
-test('runTick fans out to every due automatic-mode connection, isolating a per-connection failure from the rest of the tick', async () => {
-  const dueConnections = [
-    fixtureConnection({ id: 'conn-a', client_id: 'client-a', member_id: 'member-a', mailbox_address: 'a@client.com', sync_mode: 'automatic', oauth_connection_id: 'oauth-a' }),
-    fixtureConnection({ id: 'conn-b', client_id: 'client-a', member_id: 'member-b', mailbox_address: 'b@client.com', sync_mode: 'automatic', oauth_connection_id: 'oauth-b' }),
-  ];
-  const emailSyncRepo = fixtureEmailSyncRepo({ dueConnections });
-  const gmailService = fixtureGmailService({ pages: [{ messages: [], nextPageToken: null }] });
-  const aikbService = fixtureAikbService({});
-  const tokenCalls = [];
-  const emailConnectionService = {
-    getValidGmailAccessToken: async (oauthConnectionId) => {
-      tokenCalls.push(oauthConnectionId);
-      if (oauthConnectionId === 'oauth-b') throw new Error('token expired');
-      return 'token-a';
-    },
-  };
-  const service = createEmailSyncService({
-    gmailService,
-    emailPolicyService: fixtureEmailPolicyService([ALLOW_FINANCE]),
-    emailNormalizationService: { normalizeEmailBody },
-    aikbService,
-    emailConnectionService,
-    emailSyncRepo,
-    maxDocuments: 50,
-  });
-
-  const result = await service.runTick({ maxConnections: 10 });
-  assert.equal(result.processed, 2);
-  assert.equal(result.succeeded, 1);
-  assert.equal(result.failed, 1);
-  assert.deepEqual(tokenCalls, ['oauth-a', 'oauth-b']);
-  // conn-b's token failure happened before syncConnection ever ran — runTick
-  // must still have advanced next_sync_due_at itself, or a persistently
-  // broken connection would be re-selected on every future tick forever.
-  assert.equal(emailSyncRepo._syncStateCalls.some((c) => c.nextSyncDueAt), true);
-});
-
-test('runTick respects maxConnections — connections beyond the cap are simply left for the next tick', async () => {
-  const dueConnections = [
-    fixtureConnection({ id: 'conn-a', client_id: 'client-a', member_id: 'member-a', sync_mode: 'automatic', oauth_connection_id: 'oauth-a' }),
-    fixtureConnection({ id: 'conn-b', client_id: 'client-a', member_id: 'member-b', sync_mode: 'automatic', oauth_connection_id: 'oauth-b' }),
-  ];
-  const emailSyncRepo = fixtureEmailSyncRepo({ dueConnections });
-  const gmailService = fixtureGmailService({ pages: [{ messages: [], nextPageToken: null }] });
-  const tokenCalls = [];
-  const emailConnectionService = {
-    getValidGmailAccessToken: async (oauthConnectionId) => { tokenCalls.push(oauthConnectionId); return 'token'; },
-  };
-  const service = createEmailSyncService({
-    gmailService,
-    emailPolicyService: fixtureEmailPolicyService([ALLOW_FINANCE]),
-    emailNormalizationService: { normalizeEmailBody },
-    aikbService: fixtureAikbService({}),
-    emailConnectionService,
-    emailSyncRepo,
-    maxDocuments: 50,
-  });
-
-  const result = await service.runTick({ maxConnections: 1 });
-  assert.equal(result.processed, 1);
-  assert.deepEqual(tokenCalls, ['oauth-a']);
-});
-
-test('runTick with zero due connections is a safe no-op', async () => {
-  const emailSyncRepo = fixtureEmailSyncRepo({ dueConnections: [] });
-  const service = createEmailSyncService({
-    gmailService: fixtureGmailService({}),
-    emailPolicyService: fixtureEmailPolicyService([]),
-    emailNormalizationService: { normalizeEmailBody },
-    aikbService: fixtureAikbService({}),
-    emailConnectionService: { getValidGmailAccessToken: async () => { throw new Error('should never be called'); } },
-    emailSyncRepo,
-    maxDocuments: 50,
-  });
-  const result = await service.runTick();
-  assert.deepEqual(result, { processed: 0, succeeded: 0, failed: 0, connectionIds: [] });
-});
-
-test('runTick defaults maxConnections to TICK_MAX_CONNECTIONS when not explicitly passed', async () => {
-  let requestedMax;
-  const emailSyncRepo = {
-    listDueAutomaticConnections: async (maxConnections) => { requestedMax = maxConnections; return []; },
-  };
-  const { TICK_MAX_CONNECTIONS } = require('../services/emailSyncService');
-  const service = createEmailSyncService({ emailSyncRepo });
-  await service.runTick();
-  assert.equal(requestedMax, TICK_MAX_CONNECTIONS);
-});
+// EM10.6 removed Automatic Email Ingestion entirely — the automatic mode's
+// incremental path (messageAdded scoping, no label-removal reconciliation,
+// next_sync_due_at bookkeeping) and runTick (the POST /sync/tick
+// orchestration) no longer exist. See EMAIL_INGESTION.md's EM10.6 record.

@@ -151,18 +151,15 @@
                   </div>
 
                   <!-- EM4 — member mailbox settings (§7, §13.1, §31): own search-contribution
-                       toggle and sync-mode selector. Shown only while connected. -->
+                       toggle. Shown only while connected. (This section also used to render
+                       a sync-mode selector — a choice between manual_selected and automatic —
+                       removed in EM10.6 along with Automatic Email Ingestion itself; Gmail
+                       ingestion is label-driven only now. See EMAIL_INGESTION.md's EM10.6
+                       record.) -->
                   <div id="email-mailbox-settings-section" class="email-mailbox-settings-section" hidden>
                     <label class="slack-collection-option">
                       <input type="checkbox" id="email-search-enabled-toggle" />
                       Include my mailbox in search
-                    </label>
-                    <label class="email-sync-mode-label">
-                      Sync mode
-                      <select id="email-sync-mode-select">
-                        <option value="manual_selected">Manual (Selected Emails)</option>
-                        <option value="automatic">Automatic</option>
-                      </select>
                     </label>
                     <span id="email-mailbox-settings-save-status" class="kb-upload-status" hidden></span>
                     <!-- EM8 — pause/resume (§14.1, §Lifecycle "Paused", §31). Exactly one of
@@ -173,10 +170,6 @@
                       <button type="button" class="btn-kb-new-chat" id="email-resume-btn" hidden>Resume sync</button>
                       <span id="email-pause-resume-status" class="kb-upload-status" hidden></span>
                     </div>
-                    <!-- EM8 — next automatic sync (§27, §7). Shown only when sync_mode is
-                         'automatic'; email_sync_state.next_sync_due_at is meaningless (and
-                         this stays hidden) otherwise. -->
-                    <p id="email-next-sync-text" class="email-policy-hint" hidden></p>
                   </div>
 
                   <!-- EM5/EM6/EM7 — Gmail label workflow (§7, §10, §14.1, §14.2, §17,
@@ -186,7 +179,7 @@
                   <div id="email-sync-shell-section" class="email-sync-shell-section" hidden>
                     <p class="slack-collections-label">Sync</p>
                     <div id="email-manual-instructions" class="email-manual-instructions">
-                      <p class="email-policy-hint">Manual mode: apply the <strong>Relativity/Knowledge</strong> label in Gmail to any message you want imported. Only labeled, policy-approved messages are ever imported.</p>
+                      <p class="email-policy-hint">Apply the <strong>Relativity/Knowledge</strong> label in Gmail to any message you want imported. Only labeled, policy-approved messages are ever imported.</p>
                       <a id="email-open-gmail-link" class="btn-kb-new-chat" href="https://mail.google.com/mail/u/0/#label/Relativity%2FKnowledge" target="_blank" rel="noopener noreferrer">Open Gmail</a>
                     </div>
                     <div class="email-sync-now-row">
@@ -228,13 +221,6 @@
                     <div class="slack-collections-save-row" style="margin-top:12px;">
                       <button type="button" class="btn-kb-new-chat" id="email-policy-save-btn">Save policy</button>
                       <span id="email-policy-save-status" class="kb-upload-status" hidden></span>
-                    </div>
-                    <div class="email-policy-settings-row">
-                      <label class="slack-collection-option">
-                        <input type="checkbox" id="email-automatic-sync-toggle" />
-                        Allow members to enable Automatic sync org-wide
-                      </label>
-                      <span id="email-settings-save-status" class="kb-upload-status" hidden></span>
                     </div>
                   </div>
                 </div>

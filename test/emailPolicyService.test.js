@@ -110,21 +110,34 @@ function message(overrides = {}) {
   };
 }
 
-test('empty allow-rule set ⇒ zero matches (fail-closed), automatic mode', () => {
-  const result = evaluateMessageAgainstPolicy({ rules: [], mode: 'automatic', message: message(), hasLabel: false });
+// EM10.6 removed Automatic Email Ingestion's mode-branching (the `mode`
+// param and its label-free evaluation path) — evaluateMessageAgainstPolicy
+// is now always label-gated, matching the original manual_selected branch
+// exactly. See EMAIL_INGESTION.md's EM10.6 record.
+
+test('empty allow-rule set ⇒ zero matches (fail-closed), even when labeled', () => {
+  const result = evaluateMessageAgainstPolicy({ rules: [], message: message(), hasLabel: true });
   assert.equal(result.eligible, false);
   assert.equal(result.outcome, 'excluded_no_matching_rule');
 });
 
-test('empty allow-rule set ⇒ zero matches (fail-closed), manual mode even when labeled', () => {
-  const result = evaluateMessageAgainstPolicy({ rules: [], mode: 'manual_selected', message: message(), hasLabel: true });
+test('policy match without label ⇒ excluded_not_labeled', () => {
+  const rules = [allowRule({ labelOrFolder: 'support' })];
+  const result = evaluateMessageAgainstPolicy({ rules, message: message(), hasLabel: false });
+  assert.equal(result.eligible, false);
+  assert.equal(result.outcome, 'excluded_not_labeled');
+});
+
+test('label present but no policy match ⇒ excluded_no_matching_rule', () => {
+  const rules = [allowRule({ senderPattern: '@somewhere-else.com' })];
+  const result = evaluateMessageAgainstPolicy({ rules, message: message(), hasLabel: true });
   assert.equal(result.eligible, false);
   assert.equal(result.outcome, 'excluded_no_matching_rule');
 });
 
-test('automatic mode: allow rule matches ⇒ eligible', () => {
-  const rules = [allowRule({ senderPattern: '@client.com' })];
-  const result = evaluateMessageAgainstPolicy({ rules, mode: 'automatic', message: message() });
+test('label AND policy match ⇒ eligible', () => {
+  const rules = [allowRule({ labelOrFolder: 'support' })];
+  const result = evaluateMessageAgainstPolicy({ rules, message: message(), hasLabel: true });
   assert.equal(result.eligible, true);
   assert.equal(result.matchedRuleId, 'allow-1');
 });
@@ -134,30 +147,10 @@ test('allow matches, deny also matches ⇒ excluded (deny always wins)', () => {
     allowRule({ labelOrFolder: 'support' }),
     denyRule({ id: 'deny-payroll', labelOrFolder: 'support' }),
   ];
-  const result = evaluateMessageAgainstPolicy({ rules, mode: 'automatic', message: message() });
+  const result = evaluateMessageAgainstPolicy({ rules, message: message(), hasLabel: true });
   assert.equal(result.eligible, false);
   assert.equal(result.outcome, 'excluded_deny_listed');
   assert.equal(result.matchedRuleId, 'deny-payroll');
-});
-
-test('manual mode: policy match without label ⇒ excluded_not_labeled', () => {
-  const rules = [allowRule({ labelOrFolder: 'support' })];
-  const result = evaluateMessageAgainstPolicy({ rules, mode: 'manual_selected', message: message(), hasLabel: false });
-  assert.equal(result.eligible, false);
-  assert.equal(result.outcome, 'excluded_not_labeled');
-});
-
-test('manual mode: label present but no policy match ⇒ excluded_no_matching_rule', () => {
-  const rules = [allowRule({ senderPattern: '@somewhere-else.com' })];
-  const result = evaluateMessageAgainstPolicy({ rules, mode: 'manual_selected', message: message(), hasLabel: true });
-  assert.equal(result.eligible, false);
-  assert.equal(result.outcome, 'excluded_no_matching_rule');
-});
-
-test('manual mode: label AND policy match ⇒ eligible', () => {
-  const rules = [allowRule({ labelOrFolder: 'support' })];
-  const result = evaluateMessageAgainstPolicy({ rules, mode: 'manual_selected', message: message(), hasLabel: true });
-  assert.equal(result.eligible, true);
 });
 
 test('member labeling an email outside organization policy never expands beyond it (§16.1 item 4)', () => {
@@ -166,7 +159,6 @@ test('member labeling an email outside organization policy never expands beyond 
   const rules = [allowRule({ senderPattern: '@only-this-domain.com' })];
   const result = evaluateMessageAgainstPolicy({
     rules,
-    mode: 'manual_selected',
     message: message({ fromAddress: 'random@unrelated.com', labelsOrFolders: ['Relativity/Knowledge'] }),
     hasLabel: true,
   });
@@ -176,7 +168,7 @@ test('member labeling an email outside organization policy never expands beyond 
 
 test('disabled allow rule never matches', () => {
   const rules = [allowRule({ enabled: false, labelOrFolder: 'support' })];
-  const result = evaluateMessageAgainstPolicy({ rules, mode: 'automatic', message: message() });
+  const result = evaluateMessageAgainstPolicy({ rules, message: message(), hasLabel: true });
   assert.equal(result.eligible, false);
   assert.equal(result.outcome, 'excluded_no_matching_rule');
 });
@@ -186,19 +178,19 @@ test('disabled deny rule does not block an otherwise-matching allow rule', () =>
     allowRule({ labelOrFolder: 'support' }),
     denyRule({ enabled: false, labelOrFolder: 'support' }),
   ];
-  const result = evaluateMessageAgainstPolicy({ rules, mode: 'automatic', message: message() });
+  const result = evaluateMessageAgainstPolicy({ rules, message: message(), hasLabel: true });
   assert.equal(result.eligible, true);
 });
 
 test('provider-scoped rule does not match a different provider', () => {
   const rules = [allowRule({ provider: 'microsoft', labelOrFolder: 'support' })];
-  const result = evaluateMessageAgainstPolicy({ rules, mode: 'automatic', message: message({ provider: 'gmail' }) });
+  const result = evaluateMessageAgainstPolicy({ rules, message: message({ provider: 'gmail' }), hasLabel: true });
   assert.equal(result.eligible, false);
 });
 
 test('provider-null rule (applies to every provider) matches any provider', () => {
   const rules = [allowRule({ provider: null, labelOrFolder: 'support' })];
-  const result = evaluateMessageAgainstPolicy({ rules, mode: 'automatic', message: message({ provider: 'microsoft' }) });
+  const result = evaluateMessageAgainstPolicy({ rules, message: message({ provider: 'microsoft' }), hasLabel: true });
   assert.equal(result.eligible, true);
 });
 
@@ -206,8 +198,8 @@ test('include_sent=false excludes a Sent-folder message even if it otherwise mat
   const rules = [allowRule({ senderPattern: '@ourcompany.com', includeSent: false })];
   const result = evaluateMessageAgainstPolicy({
     rules,
-    mode: 'automatic',
     message: message({ fromAddress: 'me@ourcompany.com', isSent: true }),
+    hasLabel: true,
   });
   assert.equal(result.eligible, false);
 });
@@ -216,8 +208,8 @@ test('include_sent=true allows a Sent-folder message to match', () => {
   const rules = [allowRule({ senderPattern: '@ourcompany.com', includeSent: true })];
   const result = evaluateMessageAgainstPolicy({
     rules,
-    mode: 'automatic',
     message: message({ fromAddress: 'me@ourcompany.com', isSent: true }),
+    hasLabel: true,
   });
   assert.equal(result.eligible, true);
 });
@@ -404,41 +396,45 @@ test('replacePolicy fails closed if the insert half fails after delete succeeds'
   assert.equal(read.rules.length, 0);
 });
 
-test('getSettings defaults automaticSyncEnabled and liveLookupEnabled to false when no row exists (fail-closed)', async () => {
+// EM10.6 removed automaticSyncEnabled from email_organization_settings —
+// liveLookupEnabled (EL4/EL6) is now the only setting getSettings/
+// updateSettings carry. See EMAIL_INGESTION.md's EM10.6 record.
+
+test('getSettings defaults liveLookupEnabled to false when no row exists (fail-closed)', async () => {
   const client = createFakeSupabaseClient();
   const service = createEmailPolicyService(client);
   const settings = await service.getSettings('client-a');
-  assert.deepEqual(settings, { automaticSyncEnabled: false, liveLookupEnabled: false, updatedByMemberId: null, updatedAt: null });
+  assert.deepEqual(settings, { liveLookupEnabled: false, updatedByMemberId: null, updatedAt: null });
 });
 
 test('updateSettings persists and getSettings reads back true', async () => {
   const client = createFakeSupabaseClient();
   const service = createEmailPolicyService(client);
-  const updated = await service.updateSettings({ clientId: 'client-a', automaticSyncEnabled: true, updatedByMemberId: 'member-1' });
-  assert.equal(updated.automaticSyncEnabled, true);
+  const updated = await service.updateSettings({ clientId: 'client-a', liveLookupEnabled: true, updatedByMemberId: 'member-1' });
+  assert.equal(updated.liveLookupEnabled, true);
   assert.equal(updated.updatedByMemberId, 'member-1');
 
   const read = await service.getSettings('client-a');
-  assert.equal(read.automaticSyncEnabled, true);
+  assert.equal(read.liveLookupEnabled, true);
 });
 
-test('updateSettings can flip automaticSyncEnabled back to false (org-wide toggle immediately excludes it)', async () => {
+test('updateSettings can flip liveLookupEnabled back to false', async () => {
   const client = createFakeSupabaseClient();
   const service = createEmailPolicyService(client);
-  await service.updateSettings({ clientId: 'client-a', automaticSyncEnabled: true, updatedByMemberId: 'member-1' });
-  await service.updateSettings({ clientId: 'client-a', automaticSyncEnabled: false, updatedByMemberId: 'member-1' });
+  await service.updateSettings({ clientId: 'client-a', liveLookupEnabled: true, updatedByMemberId: 'member-1' });
+  await service.updateSettings({ clientId: 'client-a', liveLookupEnabled: false, updatedByMemberId: 'member-1' });
 
   const read = await service.getSettings('client-a');
-  assert.equal(read.automaticSyncEnabled, false);
+  assert.equal(read.liveLookupEnabled, false);
 });
 
 test('updateSettings is tenant-scoped: toggling client A never affects client B', async () => {
   const client = createFakeSupabaseClient();
   const service = createEmailPolicyService(client);
-  await service.updateSettings({ clientId: 'client-a', automaticSyncEnabled: true, updatedByMemberId: 'member-1' });
+  await service.updateSettings({ clientId: 'client-a', liveLookupEnabled: true, updatedByMemberId: 'member-1' });
 
   const bSettings = await service.getSettings('client-b');
-  assert.equal(bSettings.automaticSyncEnabled, false);
+  assert.equal(bSettings.liveLookupEnabled, false);
 });
 
 test('getPolicy/replacePolicy/getSettings/updateSettings reject a missing clientId', async () => {
@@ -447,5 +443,5 @@ test('getPolicy/replacePolicy/getSettings/updateSettings reject a missing client
   await assert.rejects(() => service.getPolicy());
   await assert.rejects(() => service.replacePolicy({ rules: [] }));
   await assert.rejects(() => service.getSettings());
-  await assert.rejects(() => service.updateSettings({ automaticSyncEnabled: true }));
+  await assert.rejects(() => service.updateSettings({ liveLookupEnabled: true }));
 });

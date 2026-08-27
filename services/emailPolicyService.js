@@ -1,8 +1,10 @@
 'use strict';
 
 // Organization email policy — allow/deny rule CRUD and the org-wide
-// automatic-sync switch (EM3 — Architecture/architecture/EMAIL_INGESTION.md
-// §13.1, §14.1, §16, §31). Still no actual ingestion here: this file is the
+// live-lookup switch (EM3 — Architecture/architecture/EMAIL_INGESTION.md
+// §13.1, §14.1, §16, §31; the org-wide automatic-sync switch this file also
+// used to own was removed in EM10.6 — Gmail ingestion is label-driven only
+// now). Still no actual ingestion here: this file is the
 // policy-authoring surface plus the pure rule-matching logic EM5/EM6 will
 // call against real messages — evaluateMessageAgainstPolicy is exported
 // specifically so those later milestones don't need to reimplement it.
@@ -92,11 +94,10 @@ function mapRuleRowToApi(row) {
 
 function mapSettingsRowToApi(row) {
   return {
-    automaticSyncEnabled: row ? row.automatic_sync_enabled : false,
-    // EL4 (Architecture/architecture/LIVE_EMAIL_LOOKUP.md §7) — a separate,
-    // independent org-wide switch from automaticSyncEnabled; read-only here,
-    // no write path yet (updateSettings below is unchanged) since the
-    // settings UI/route for this flag is EL6's scope, not EL4's.
+    // EL4 (Architecture/architecture/LIVE_EMAIL_LOOKUP.md §7) — org-wide
+    // live-lookup switch. (Automatic Email Ingestion's own org-wide switch,
+    // automatic_sync_enabled, was removed in EM10.6 — Gmail ingestion is
+    // label-driven only now; see EMAIL_INGESTION.md's EM10.6 record.)
     liveLookupEnabled: row ? row.live_lookup_enabled : false,
     updatedByMemberId: row ? row.updated_by_member_id : null,
     updatedAt: row ? row.updated_at : null,
@@ -157,18 +158,22 @@ function ruleMatchesMessage(rule, message) {
  * getPolicy) — no ingestion, network, or DB access happens here. EM3 builds
  * and tests this logic; EM5/EM6 wire it up against real fetched messages.
  *
- * Evaluated in the same order §16's diagram specifies: the manual-mode
- * label gate first (independent of and prior to policy matching), then
- * allow-rule matching, then deny-rule override. Deny always wins.
+ * Evaluated in the order §16's diagram specifies: the label gate first
+ * (independent of and prior to policy matching), then allow-rule matching,
+ * then deny-rule override. Deny always wins.
+ *
+ * EM10.6 — Automatic Email Ingestion (a second, label-free evaluation path)
+ * was removed; this is now the single, always-label-gated ingestion path,
+ * matching label-driven mode's original branch exactly (see
+ * EMAIL_INGESTION.md's EM10.6 record).
  *
  * @param {object[]} rules - API-shaped email_ingestion_rules rows.
- * @param {'manual_selected'|'automatic'} mode
  * @param {object} message - candidate message shape (see ruleMatchesMessage).
- * @param {boolean} hasLabel - only consulted in manual_selected mode.
+ * @param {boolean} hasLabel
  * @returns {{eligible: boolean, outcome: string|null, matchedRuleId: string|null, reason: string}}
  */
-function evaluateMessageAgainstPolicy({ rules, mode, message, hasLabel }) {
-  if (mode === 'manual_selected' && !hasLabel) {
+function evaluateMessageAgainstPolicy({ rules, message, hasLabel }) {
+  if (!hasLabel) {
     return {
       eligible: false,
       outcome: 'excluded_not_labeled',
@@ -274,9 +279,9 @@ function createEmailPolicyService(client) {
   }
 
   /**
-   * Fails closed even before any row exists: email_organization_settings is
-   * created lazily (§13.1) — a client that never touches this setting still
-   * gets automaticSyncEnabled: false.
+   * email_organization_settings is created lazily (§13.1) — a client that
+   * never touches this setting still gets liveLookupEnabled: false
+   * (fail-closed).
    */
   async function getSettings(clientId) {
     if (!clientId) throw new Error('getSettings requires clientId');
@@ -291,28 +296,21 @@ function createEmailPolicyService(client) {
     return mapSettingsRowToApi(data);
   }
 
-  // EL6 — liveLookupEnabled is optional and independent of
-  // automaticSyncEnabled (still required, unchanged from before this
-  // milestone — every existing caller keeps working with no change).
-  // Omitting liveLookupEnabled leaves the stored value untouched (Supabase
-  // upsert only overwrites columns present in the payload); passing it
-  // explicitly (including `false`) always writes it.
-  async function updateSettings({ clientId, automaticSyncEnabled, liveLookupEnabled, updatedByMemberId }) {
+  // EL6 — the org-wide live-lookup switch. (Automatic Email Ingestion's own
+  // org-wide switch was removed in EM10.6 — this is now the only setting
+  // this function writes.)
+  async function updateSettings({ clientId, liveLookupEnabled, updatedByMemberId }) {
     if (!clientId) throw new Error('updateSettings requires clientId');
-    if (typeof automaticSyncEnabled !== 'boolean') {
-      throw new Error('updateSettings requires a boolean automaticSyncEnabled');
-    }
-    if (liveLookupEnabled !== undefined && typeof liveLookupEnabled !== 'boolean') {
-      throw new Error('updateSettings: liveLookupEnabled must be a boolean when provided');
+    if (typeof liveLookupEnabled !== 'boolean') {
+      throw new Error('updateSettings requires a boolean liveLookupEnabled');
     }
 
     const payload = {
       client_id: clientId,
-      automatic_sync_enabled: automaticSyncEnabled,
+      live_lookup_enabled: liveLookupEnabled,
       updated_by_member_id: updatedByMemberId || null,
       updated_at: new Date().toISOString(),
     };
-    if (liveLookupEnabled !== undefined) payload.live_lookup_enabled = liveLookupEnabled;
 
     const { data, error } = await client
       .from('email_organization_settings')

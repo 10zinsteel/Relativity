@@ -156,19 +156,10 @@ test('unlabeled-but-policy-matching messages are excluded in manual mode even if
   assert.deepEqual(result.sample.map((s) => s.subject), ['Labeled']);
 });
 
-// ─────────────────────────────────────────────
-// Switching Manual <-> Automatic / automatic mode ignores labels (§16.1 item 3, §24.3/24.4)
-// ─────────────────────────────────────────────
-
-test('automatic mode ignores label presence/absence entirely — only organization policy decides', async () => {
-  const messages = [
-    { id: 'm1', subject: 'Labeled', fromAddress: 'ap@vendor.com', labelIds: [MANAGED_LABEL_ID, 'Label_finance'] },
-    { id: 'm2', subject: 'Unlabeled', fromAddress: 'ap@vendor.com', labelIds: ['Label_finance'] },
-  ];
-  const service = makeService({ messages, rules: [ALLOW_FINANCE] });
-  const result = await service.buildPreview({ clientId: 'client-a', emailConnectionRow: fixtureConnection({ sync_mode: 'automatic' }), accessToken: 'token' });
-  assert.equal(result.matchedCount, 2, 'both the labeled and unlabeled policy-matching messages must match in automatic mode');
-});
+// EM10.6 removed Automatic Email Ingestion — the mode that ignored label
+// presence/absence entirely (organization policy alone decided) no longer
+// exists; every message is now always label-gated (§16.1 item 3, prior
+// text). See EMAIL_INGESTION.md's EM10.6 record.
 
 // ─────────────────────────────────────────────
 // Organization deny rules rejecting labeled emails (§16.1 item 5)
@@ -206,18 +197,10 @@ test('a labeled message matching zero allow rules is excluded — the label alon
 });
 
 // ─────────────────────────────────────────────
-// Empty organization policy fails closed in BOTH modes (§16.1 item 6)
+// Empty organization policy fails closed (§16.1 item 6)
 // ─────────────────────────────────────────────
 
-test('empty policy in automatic mode short-circuits to zero matches with NO provider call at all', async () => {
-  const listCalls = [];
-  const service = makeService({ messages: [{ id: 'm1', subject: 'x', fromAddress: 'a@b.com', labelIds: [] }], rules: [], listCalls });
-  const result = await service.buildPreview({ clientId: 'client-a', emailConnectionRow: fixtureConnection({ sync_mode: 'automatic' }), accessToken: 'token' });
-  assert.deepEqual(result, { matchedCount: 0, scannedCount: 0, sample: [], nextPageToken: null, complete: true });
-  assert.equal(listCalls.length, 0, 'compileSearchQuery returning null must short-circuit before any listMessageIdsByQuery call');
-});
-
-test('empty policy in manual mode still lists candidates (label alone drives the query) but locally excludes everything — zero matches', async () => {
+test('empty policy still lists candidates (label alone drives the query) but locally excludes everything — zero matches', async () => {
   const messages = [{ id: 'm1', subject: 'Anything', fromAddress: 'a@b.com', labelIds: [MANAGED_LABEL_ID] }];
   const service = makeService({ messages, rules: [] });
   const result = await service.buildPreview({ clientId: 'client-a', emailConnectionRow: fixtureConnection(), accessToken: 'token' });

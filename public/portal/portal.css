@@ -481,23 +481,6 @@ body {
   border-top: 1px solid var(--border);
 }
 
-.email-sync-mode-label {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 0.82rem;
-  color: var(--text-secondary);
-}
-
-.email-sync-mode-label select {
-  background: var(--bg-card-hover);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  color: var(--text-primary);
-  font-size: 0.78rem;
-  padding: 5px 8px;
-}
-
 /* ---- Overview: Gmail label workflow shell, preview-only (EM5) ---- */
 .email-sync-shell-section {
   width: 100%;
@@ -651,15 +634,6 @@ body {
   cursor: pointer;
 }
 .email-policy-rule-remove-btn:hover { opacity: 0.85; }
-
-.email-policy-settings-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-top: 14px;
-  padding-top: 14px;
-  border-top: 1px solid var(--border);
-}
 
 @media (max-width: 520px) {
   .integration-row {

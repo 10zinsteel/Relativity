@@ -342,18 +342,21 @@
   const canConnectGmail     = memberRole !== 'viewer';
 
   // EM4 — member mailbox settings (§7, §13.1, §31): own search-contribution
-  // toggle and sync-mode selector, shown only while connected.
+  // toggle, shown only while connected. (The sync-mode selector this
+  // section also used to render — a member's choice between manual_selected
+  // and automatic — was removed in EM10.6 along with Automatic Email
+  // Ingestion itself; Gmail ingestion is label-driven only now. See
+  // EMAIL_INGESTION.md's EM10.6 record.)
   const emailMailboxSettingsSection = document.getElementById('email-mailbox-settings-section');
   const emailSearchEnabledToggle    = document.getElementById('email-search-enabled-toggle');
-  const emailSyncModeSelect         = document.getElementById('email-sync-mode-select');
   const emailMailboxSettingsStatus  = document.getElementById('email-mailbox-settings-save-status');
 
-  // EM8 — pause/resume (§14.1, §Lifecycle "Paused", §31) and the "next
-  // automatic sync" display (§27, §7), shown only while connected.
+  // EM8 — pause/resume (§14.1, §Lifecycle "Paused", §31), shown only while
+  // connected. (The "next automatic sync" display this section also used to
+  // render was removed in EM10.6 alongside automatic mode.)
   const emailPauseBtn          = document.getElementById('email-pause-btn');
   const emailResumeBtn         = document.getElementById('email-resume-btn');
   const emailPauseResumeStatus = document.getElementById('email-pause-resume-status');
-  const emailNextSyncText      = document.getElementById('email-next-sync-text');
 
   // EM5/EM6 — Gmail label workflow shell (§7, §10, §14.2, §17, §31): "Open
   // Gmail" shortcut, label instructions (manual mode only), and "Sync now"
@@ -389,7 +392,6 @@
       if (emailSyncShellSection) emailSyncShellSection.hidden = true;
       if (emailPauseBtn) emailPauseBtn.hidden = true;
       if (emailResumeBtn) emailResumeBtn.hidden = true;
-      if (emailNextSyncText) emailNextSyncText.hidden = true;
       if (slackLinkSection) slackLinkSection.hidden = true;
       return;
     }
@@ -406,19 +408,6 @@
     }
 
     if (emailMailboxSettingsSection) emailMailboxSettingsSection.hidden = !isConnected;
-    if (isConnected && emailSyncModeSelect) {
-      emailSyncModeSelect.dataset.connectionId = own.connectionId;
-      const mode = own.syncMode || 'manual_selected';
-      // 'paused' has no matching <option> (§7 — reached only via the pause
-      // control below, never this selector) — disable it while paused so a
-      // member resumes first rather than picking a mode out of a stale
-      // selection; the selector re-syncs to the real mode on resume.
-      emailSyncModeSelect.disabled = mode === 'paused';
-      if (mode !== 'paused') {
-        emailSyncModeSelect.value = mode;
-        emailSyncModeSelect.dataset.priorValue = mode;
-      }
-    }
 
     // EM8 — pause/resume (§14.1, §Lifecycle "Paused"). Exactly one button
     // visible at a time, based on the connection's current sync_mode.
@@ -434,23 +423,11 @@
       }
     }
 
-    // EM8 — next automatic sync (§27, §7): shown only in automatic mode,
-    // where the server actually populates it (null/meaningless otherwise).
-    if (emailNextSyncText) {
-      if (isConnected && own.syncMode === 'automatic' && own.nextSyncDueAt) {
-        emailNextSyncText.textContent = `Next automatic sync: ${new Date(own.nextSyncDueAt).toLocaleString()}`;
-        emailNextSyncText.hidden = false;
-      } else {
-        emailNextSyncText.hidden = true;
-      }
-    }
-
     if (slackLinkSection) slackLinkSection.hidden = !isConnected;
 
     if (emailSyncShellSection) emailSyncShellSection.hidden = !isConnected;
     if (isConnected && emailSyncNowBtn) {
       emailSyncNowBtn.dataset.connectionId = own.connectionId;
-      if (emailManualInstructions) emailManualInstructions.hidden = own.syncMode === 'automatic';
       loadEmailSyncRunHistory(own.connectionId);
     }
   }
@@ -556,8 +533,7 @@
 
   // EM4 — member mailbox settings: the member's own search_enabled flag
   // (independent of any specific connection, but only shown/meaningful
-  // while a mailbox is connected) and, once org policy allows it, whether
-  // the sync-mode selector's Automatic option is actually selectable.
+  // while a mailbox is connected).
   async function loadEmailMemberSettings() {
     if (!emailSearchEnabledToggle) return;
     try {
@@ -573,27 +549,7 @@
     }
   }
 
-  async function loadEmailAutomaticAvailability() {
-    if (!emailSyncModeSelect) return;
-    try {
-      const res = await fetch('/api/integrations/email/settings', {
-        headers: { Authorization: `Bearer ${accessToken}` },
-      });
-      if (!res.ok) return;
-      const { automaticSyncEnabled } = await res.json();
-      const automaticOption = emailSyncModeSelect.querySelector('option[value="automatic"]');
-      if (automaticOption) {
-        automaticOption.disabled = !automaticSyncEnabled;
-        automaticOption.textContent = automaticSyncEnabled ? 'Automatic' : 'Automatic (disabled by admin)';
-      }
-    } catch {
-      // Leave both options enabled — the server still enforces the gate on
-      // POST /sync-mode regardless of what the selector shows here.
-    }
-  }
-
   loadEmailMemberSettings();
-  loadEmailAutomaticAvailability();
 
   if (emailSearchEnabledToggle) {
     emailSearchEnabledToggle.addEventListener('change', async () => {
@@ -626,48 +582,10 @@
     });
   }
 
-  if (emailSyncModeSelect) {
-    emailSyncModeSelect.addEventListener('change', async () => {
-      const connectionId = emailSyncModeSelect.dataset.connectionId;
-      if (!connectionId) return;
-      const syncMode = emailSyncModeSelect.value;
-      const priorValue = emailSyncModeSelect.dataset.priorValue || 'manual_selected';
-      emailSyncModeSelect.disabled = true;
-      if (emailMailboxSettingsStatus) emailMailboxSettingsStatus.hidden = true;
-      try {
-        const res = await fetch(`/api/integrations/email/connections/${encodeURIComponent(connectionId)}/sync-mode`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
-          body: JSON.stringify({ syncMode }),
-        });
-        const body = await res.json().catch(() => ({}));
-        if (!res.ok) throw new Error(body.error || 'Could not update sync mode.');
-        emailSyncModeSelect.value = body.syncMode;
-        emailSyncModeSelect.dataset.priorValue = body.syncMode;
-        if (emailManualInstructions) emailManualInstructions.hidden = body.syncMode === 'automatic';
-        if (emailMailboxSettingsStatus) {
-          emailMailboxSettingsStatus.textContent = 'Saved.';
-          emailMailboxSettingsStatus.className = 'kb-upload-status kb-upload-status--success';
-          emailMailboxSettingsStatus.hidden = false;
-        }
-      } catch (err) {
-        emailSyncModeSelect.value = priorValue; // revert on failure
-        if (emailMailboxSettingsStatus) {
-          emailMailboxSettingsStatus.textContent = err.message || 'Could not update sync mode.';
-          emailMailboxSettingsStatus.className = 'kb-upload-status kb-upload-status--error';
-          emailMailboxSettingsStatus.hidden = false;
-        }
-      } finally {
-        emailSyncModeSelect.disabled = false;
-      }
-    });
-  }
-
   // EM8 — pause/resume (§14.1, §Lifecycle "Paused", §31). Both simply
   // re-fetch and re-render the whole card afterward (loadGmailStatus)
   // rather than hand-patching every dependent piece of UI state (the
-  // sync-mode selector's disabled/value, the pause/resume button
-  // visibility, the next-sync text) — the connection's full state already
+  // pause/resume button visibility) — the connection's full state already
   // has to be re-derived correctly, and GET /connections is cheap.
   async function handlePauseOrResume(button, path, actionLabel) {
     const connectionId = button.dataset.connectionId;
@@ -820,10 +738,12 @@
 
   // 4d. Email organization policy (EM3 — Architecture/architecture/
   // EMAIL_INGESTION.md §14.1, §16, §31). Owner/admin sees and edits the full
-  // rule builder plus the org-wide automatic-sync toggle; every other active
-  // member sees a read-only summary of what already bounds their own
-  // mailbox (§7's "Organization policy summary" requirement). Still no
-  // ingestion happens from this UI — that's EM5/EM6.
+  // rule builder; every other active member sees a read-only summary of
+  // what already bounds their own mailbox (§7's "Organization policy
+  // summary" requirement). Still no ingestion happens from this UI — that's
+  // EM5/EM6. (The org-wide automatic-sync toggle this section also used to
+  // render was removed in EM10.6 along with Automatic Email Ingestion
+  // itself — see EMAIL_INGESTION.md's EM10.6 record.)
   const emailPolicySummarySection = document.getElementById('email-policy-summary-section');
   const emailPolicySummaryText    = document.getElementById('email-policy-summary-text');
   const emailPolicyBuilderSection = document.getElementById('email-policy-builder-section');
@@ -831,8 +751,6 @@
   const emailPolicyAddRuleBtn     = document.getElementById('email-policy-add-rule-btn');
   const emailPolicySaveBtn        = document.getElementById('email-policy-save-btn');
   const emailPolicySaveStatus     = document.getElementById('email-policy-save-status');
-  const emailAutomaticSyncToggle  = document.getElementById('email-automatic-sync-toggle');
-  const emailSettingsSaveStatus   = document.getElementById('email-settings-save-status');
 
   function summarizePolicy(rules) {
     const enabled = (rules || []).filter((r) => r.enabled);
@@ -906,9 +824,8 @@
     emailPolicyBuilderSection.hidden = false;
     try {
       const needsCollections = !loadedCollections;
-      const [policyRes, settingsRes, collectionsRes] = await Promise.all([
+      const [policyRes, collectionsRes] = await Promise.all([
         fetch('/api/integrations/email/policy', { headers: { Authorization: `Bearer ${accessToken}` } }),
-        fetch('/api/integrations/email/settings', { headers: { Authorization: `Bearer ${accessToken}` } }),
         needsCollections
           ? fetch('/api/collections', { headers: { Authorization: `Bearer ${accessToken}` } })
           : Promise.resolve(null),
@@ -922,10 +839,6 @@
         renderRuleRows(rules);
       } else if (emailPolicyRulesList) {
         emailPolicyRulesList.innerHTML = '<span class="kb-doc-meta">Could not load policy.</span>';
-      }
-      if (settingsRes.ok && emailAutomaticSyncToggle) {
-        const { automaticSyncEnabled } = await settingsRes.json();
-        emailAutomaticSyncToggle.checked = !!automaticSyncEnabled;
       }
     } catch {
       if (emailPolicyRulesList) emailPolicyRulesList.innerHTML = '<span class="kb-doc-meta">Could not load policy.</span>';
@@ -981,38 +894,9 @@
     });
   }
 
-  if (emailAutomaticSyncToggle) {
-    emailAutomaticSyncToggle.addEventListener('change', async () => {
-      const automaticSyncEnabled = emailAutomaticSyncToggle.checked;
-      emailAutomaticSyncToggle.disabled = true;
-      if (emailSettingsSaveStatus) emailSettingsSaveStatus.hidden = true;
-      try {
-        const res = await fetch('/api/integrations/email/settings', {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
-          body: JSON.stringify({ automaticSyncEnabled }),
-        });
-        if (!res.ok) {
-          const body = await res.json().catch(() => ({}));
-          throw new Error(body.error || 'Could not save.');
-        }
-        if (emailSettingsSaveStatus) {
-          emailSettingsSaveStatus.textContent = 'Saved.';
-          emailSettingsSaveStatus.className = 'kb-upload-status kb-upload-status--success';
-          emailSettingsSaveStatus.hidden = false;
-        }
-      } catch (err) {
-        emailAutomaticSyncToggle.checked = !automaticSyncEnabled; // revert on failure
-        if (emailSettingsSaveStatus) {
-          emailSettingsSaveStatus.textContent = err.message || 'Could not save.';
-          emailSettingsSaveStatus.className = 'kb-upload-status kb-upload-status--error';
-          emailSettingsSaveStatus.hidden = false;
-        }
-      } finally {
-        emailAutomaticSyncToggle.disabled = false;
-      }
-    });
-  }
+  // EM10.6 removed the org-wide automatic-sync toggle's change listener
+  // along with Automatic Email Ingestion itself — see EMAIL_INGESTION.md's
+  // EM10.6 record.
 
   if (isOwnerAdmin) {
     loadEmailPolicyBuilder();

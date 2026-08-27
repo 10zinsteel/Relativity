@@ -35,9 +35,8 @@ function createEmailPreviewService({
   /**
    * @param {string} clientId
    * @param {object} emailConnectionRow - the email_connections row (needs
-   *   sync_mode and managed_label_id; callers are responsible for having
-   *   already run emailConnectionService.ensureManagedLabel for manual-mode
-   *   connections before calling this).
+   *   managed_label_id; callers are responsible for having already run
+   *   emailConnectionService.ensureManagedLabel before calling this).
    * @param {string} accessToken - a live, already-refreshed Gmail access
    *   token (emailConnectionService.getValidGmailAccessToken).
    * @param {string|null} [pageToken] - continuation token from a prior call.
@@ -48,21 +47,9 @@ function createEmailPreviewService({
     if (!emailConnectionRow) throw new Error('buildPreview requires emailConnectionRow');
     if (!accessToken) throw new Error('buildPreview requires accessToken');
 
-    // `paused` has no query-compilation meaning of its own (§13.1's 3-value
-    // enum); a paused connection isn't reachable via the API yet (pause/
-    // resume is an EM4-flagged gap, still unbuilt) — default it to the same
-    // label-gated compilation `manual_selected` uses rather than invent a
-    // fourth query shape for a state nothing can currently produce.
-    const mode = emailConnectionRow.sync_mode === 'automatic' ? 'automatic' : 'manual_selected';
-
     const { rules } = await emailPolicyService.getPolicy(clientId);
 
-    const query = gmailService.compileSearchQuery({ mode, rules });
-    if (!query) {
-      // Zero enabled allow rules in automatic mode ⇒ fail-closed, zero
-      // candidates, no provider call at all (§16.1 item 6).
-      return { matchedCount: 0, scannedCount: 0, sample: [], nextPageToken: null, complete: true };
-    }
+    const query = gmailService.compileSearchQuery();
 
     const { messageIds, nextPageToken } = await gmailService.listMessageIdsByQuery({
       accessToken,
@@ -106,7 +93,7 @@ function createEmailPreviewService({
         labelsOrFolders,
       };
 
-      const decision = emailPolicyService.evaluateMessageAgainstPolicy({ rules, mode, message, hasLabel });
+      const decision = emailPolicyService.evaluateMessageAgainstPolicy({ rules, message, hasLabel });
       if (decision.eligible) {
         matchedCount++;
         if (sample.length < PREVIEW_PAGE_SIZE) {
