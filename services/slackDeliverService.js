@@ -12,6 +12,7 @@ const defaultOauthConnectionsService = require('./oauthConnectionsService');
 const defaultSlackEventLogService = require('./slackEventLogService');
 const defaultSlackDeliveryService = require('./slackDeliveryService');
 const defaultSlackDeliveryFailureService = require('./slackDeliveryFailureService');
+const defaultCitationAttributionService = require('./citationAttributionService');
 const { formatSlackMessage, FALLBACK } = require('./slackAnswerFormatter');
 const { retryWithBackoff } = require('./retryWithBackoff');
 const config = require('../config');
@@ -30,6 +31,7 @@ function createSlackDeliverService({
   slackEventLogService = defaultSlackEventLogService,
   slackDeliveryService = defaultSlackDeliveryService,
   slackDeliveryFailureService = defaultSlackDeliveryFailureService,
+  citationAttributionService = defaultCitationAttributionService,
   sleep,
 } = {}) {
   /**
@@ -76,10 +78,17 @@ function createSlackDeliverService({
       return { result: RESULT.CONNECTION_REVOKED };
     }
 
+    // EM10.8 — resolve each email source's opaque contributingMemberId to a
+    // display name before formatting; a no-op when no source carries one.
+    let enrichedSources = payload && payload.sources;
+    if (isAnswerDelivery && Array.isArray(enrichedSources)) {
+      enrichedSources = await citationAttributionService.enrichSourcesWithContributorNames(clientId, enrichedSources);
+    }
+
     const text = isAnswerDelivery
       ? formatSlackMessage({
         answer: payload && payload.answer,
-        sources: payload && payload.sources,
+        sources: enrichedSources,
         isKnowledgeGap: !!(payload && payload.isKnowledgeGap),
         // EL7B (§3.2) — narrow signal only (never the full intent object);
         // AIKB sets this when the classifier thought live email might help

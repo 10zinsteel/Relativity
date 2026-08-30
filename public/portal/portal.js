@@ -1851,7 +1851,18 @@
     const subject = s.subject || '(no subject)';
     const from = s.from || 'unknown sender';
     const date = formatCitationDate(citationDate(s));
-    li.appendChild(document.createTextNode(`Email — "${subject}" from ${from}${date ? `, ${date}` : ''}`));
+    // EM10.8 (EMAIL_INGESTION.md §23) — contributor attribution: whose
+    // connection actually contributed this message, as distinct from
+    // `from` (the message's original sender) — not always the same
+    // person. Resolved server-side (citationAttributionService); this file
+    // only ever renders the already-resolved name. Shown before the
+    // deep link specifically so a member knows, before clicking "Open in
+    // Gmail", whether it's even their own mailbox that link will try to
+    // open.
+    const attribution = typeof s.contributingMemberName === 'string' && s.contributingMemberName.trim()
+      ? ` — via ${s.contributingMemberName.trim()}'s mailbox`
+      : '';
+    li.appendChild(document.createTextNode(`Email — "${subject}" from ${from}${date ? `, ${date}` : ''}${attribution}`));
     if (s.deepLinkUrl) {
       li.appendChild(document.createTextNode(' — '));
       const link = document.createElement('a');

@@ -48,7 +48,7 @@ function titleForSource(source) {
 }
 
 /**
- * @param {Array<{fileName?: string, title?: string, pages?: number[], subject?: string, from?: string, live?: boolean}>} sources
+ * @param {Array<{fileName?: string, title?: string, pages?: number[], subject?: string, from?: string, live?: boolean, contributingMemberName?: string}>} sources
  * @returns {string[]} deduplicated, capped, human-readable citation lines.
  */
 function formatCitations(sources) {
@@ -66,10 +66,21 @@ function formatCitations(sources) {
     if (seen.has(key)) continue;
     seen.add(key);
 
+    // EM10.8 (EMAIL_INGESTION.md §23) — contributor attribution, when
+    // present. Only ever set on a stored-ingestion email citation (by
+    // Relativity's citationAttributionService, server-side, before this
+    // function ever runs); live sources never carry it. Appended to the
+    // dedup KEY's underlying title, not used to compute the key itself —
+    // two chunks from the same document already dedupe on title alone.
+    const attribution = typeof source.contributingMemberName === 'string' && source.contributingMemberName.trim()
+      ? ` — via ${source.contributingMemberName.trim()}'s mailbox`
+      : '';
+    const displayTitle = `${title}${attribution}`;
+
     // §3.2/§6.3 — a live result is fresher and can change/disappear, unlike
     // a durable stored citation; marked distinctly here the same way the
     // portal's own "🔴 Live" badge (portal.js) distinguishes the two.
-    lines.push(source.live === true ? `${title} (Live)` : title);
+    lines.push(source.live === true ? `${displayTitle} (Live)` : displayTitle);
     if (lines.length >= MAX_CITATIONS) break;
   }
 

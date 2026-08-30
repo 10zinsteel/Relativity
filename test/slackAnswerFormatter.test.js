@@ -35,6 +35,28 @@ test('renders an email-sourced citation via its title field (EM10 shape), not fi
   assert.deepEqual(lines, ['"Q3 Renewal Terms" from Jane Doe']);
 });
 
+// EM10.8 (EMAIL_INGESTION.md §23) — contributor attribution, resolved
+// server-side by Relativity's citationAttributionService before this
+// function ever runs, so this file only ever sees the already-resolved
+// contributingMemberName string, never the raw member id.
+test('appends "via [Name]\'s mailbox" when a source carries contributingMemberName', () => {
+  const lines = formatCitations([{
+    title: '"Q3 Renewal Terms" from Jane Doe',
+    contributingMemberName: 'Alex Doe',
+  }]);
+  assert.deepEqual(lines, ['"Q3 Renewal Terms" from Jane Doe — via Alex Doe\'s mailbox']);
+});
+
+test('omits attribution entirely when contributingMemberName is absent (plain documents, live sources, unresolved lookups)', () => {
+  const lines = formatCitations([{ fileName: 'Handbook.pdf' }]);
+  assert.deepEqual(lines, ['Handbook.pdf']);
+});
+
+test('attribution renders correctly alongside the (Live) suffix ordering, even though the two are not expected to co-occur in practice', () => {
+  const lines = formatCitations([{ subject: 'Live thread', from: 'jane@client.com', live: true, contributingMemberName: 'Alex Doe' }]);
+  assert.deepEqual(lines, ['"Live thread" from jane@client.com — via Alex Doe\'s mailbox (Live)']);
+});
+
 test('a mixed set (plain document + email-sourced) renders both correctly in one Slack message', () => {
   const text = formatSlackMessage({
     answer: 'Renewal terms are net-30.',

@@ -434,6 +434,23 @@ async function getClientMemberById(memberId, clientId) {
   return data;
 }
 
+// EM10.8 (EMAIL_INGESTION.md §23) — citationAttributionService's own read
+// path: one batched query for every distinct contributingMemberId across a
+// query's sources, mirroring getEmailConnectionsForClient's member-lookup
+// pattern below. A member id with no matching row (e.g. hard-deleted, see
+// 20260813_team_member_hard_delete.sql) is simply absent from the returned
+// array — callers must not assume every requested id comes back.
+async function getClientMembersByIds(clientId, memberIds) {
+  if (!Array.isArray(memberIds) || memberIds.length === 0) return [];
+  const { data, error } = await supabase
+    .from('client_members')
+    .select('id, email, full_name')
+    .eq('client_id', clientId)
+    .in('id', memberIds);
+  if (error) throw new Error(`getClientMembersByIds failed: ${error.message}`);
+  return data || [];
+}
+
 async function getMemberByAuthUserId(authUserId) {
   const { data, error } = await supabase
     .from('client_members')
@@ -967,6 +984,7 @@ module.exports = {
   // Team members
   getClientMemberByAuthUserId,
   getClientMemberById,
+  getClientMembersByIds,
   getMemberByAuthUserId,
   createClientMember,
   getClientMembers,

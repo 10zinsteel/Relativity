@@ -8,6 +8,7 @@ const clientAuth = require('../middleware/clientAuth');
 const googleDriveImportService = require('../services/googleDriveImportService');
 const aikbService = require('../services/aikbService');
 const emailLiveLookupService = require('../services/emailLiveLookupService');
+const citationAttributionService = require('../services/citationAttributionService');
 const supabaseService = require('../services/supabaseService');
 const openaiService = require('../services/openaiService');
 const config = require('../config');
@@ -499,6 +500,12 @@ router.post('/knowledge/query', clientAuth, async (req, res) => {
     const forceLiveLookup = mode === 'live_email' && emailLookupAvailable;
 
     const data = await aikbService.queryKnowledge(req.client.id, query.trim(), sessionId || null, req.headers.authorization, allowedCollectionIds, { emailLookupAvailable, forceLiveLookup });
+    // EM10.8 — resolve each email source's opaque contributingMemberId to a
+    // display name before it ever reaches the client; a no-op when no
+    // source carries one (plain documents, live-lookup sources).
+    if (Array.isArray(data.sources)) {
+      data.sources = await citationAttributionService.enrichSourcesWithContributorNames(req.client.id, data.sources);
+    }
     // Record which member owns this session in the local mapping table
     const returnedSessionId = data.sessionId || data.session_id;
     if (returnedSessionId && req.member?.id) {

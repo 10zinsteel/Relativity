@@ -87,22 +87,38 @@ function createFakeAikbRedactClient({ shouldFail = false } = {}) {
   };
 }
 
+// EM10.8 — a trivial fake: appends "(enriched)" to any source that carried
+// a contributingMemberId, so tests can assert enrichment ran (or didn't)
+// without depending on citationAttributionService's own real logic.
+function createFakeCitationAttributionService() {
+  const calls = [];
+  return {
+    calls,
+    enrichSourcesWithContributorNames: async (clientId, sources) => {
+      calls.push({ clientId, sources });
+      return sources.map((s) => (s.contributingMemberId ? { ...s, contributingMemberName: '(enriched)' } : s));
+    },
+  };
+}
+
 function buildService({ row, deliveryFailOptions = {}, aikbRedactOptions = {}, connectionOptions = {} } = {}) {
   const slackEventLogService = createFakeSlackEventLogService({ row });
   const slackDeliveryService = createFakeSlackDeliveryService(deliveryFailOptions);
   const aikbRedactClient = createFakeAikbRedactClient(aikbRedactOptions);
   const oauthConnectionsService = createFakeOauthConnectionsService(connectionOptions);
   const slackDeliveryFailureService = createSlackDeliveryFailureService({ slackEventLogService, aikbRedactClient });
+  const citationAttributionService = createFakeCitationAttributionService();
 
   const service = createSlackDeliverService({
     slackEventLogService,
     oauthConnectionsService,
     slackDeliveryService,
     slackDeliveryFailureService,
+    citationAttributionService,
     sleep: NO_OP_SLEEP,
   });
 
-  return { service, slackEventLogService, slackDeliveryService, aikbRedactClient, oauthConnectionsService };
+  return { service, slackEventLogService, slackDeliveryService, aikbRedactClient, oauthConnectionsService, citationAttributionService };
 }
 
 test('a successful answer is formatted and delivered on the first attempt, then the row is marked delivered', async () => {
@@ -120,6 +136,33 @@ test('a successful answer is formatted and delivered on the first attempt, then 
   assert.match(slackDeliveryService.calls[0].text, /Sources:\n• PTO\.pdf/);
   assert.equal(slackEventLogService.state.row.status, 'delivered');
   assert.equal(slackEventLogService.state.row.attempt_count, 1);
+});
+
+// EM10.8 (EMAIL_INGESTION.md §23) — contributor attribution.
+test('an answer delivery enriches sources via citationAttributionService before formatting, passing the verified clientId (never a payload-supplied one)', async () => {
+  const { service, slackDeliveryService, citationAttributionService } = buildService({ row: baseRow() });
+
+  await service.handleDeliverCallback({
+    clientId: CLIENT_ID,
+    idempotencyKey: IDEMPOTENCY_KEY,
+    payload: { answer: 'Renewal terms are net-30.', sources: [{ title: '"Renewal" from Jane', contributingMemberId: 'member-a' }], isKnowledgeGap: false },
+  });
+
+  assert.equal(citationAttributionService.calls.length, 1);
+  assert.deepEqual(citationAttributionService.calls[0], { clientId: CLIENT_ID, sources: [{ title: '"Renewal" from Jane', contributingMemberId: 'member-a' }] });
+  assert.match(slackDeliveryService.calls[0].text, /via \(enriched\)'s mailbox/);
+});
+
+test('an AIKB-reported error payload never calls citationAttributionService — there is nothing to enrich', async () => {
+  const { service, citationAttributionService } = buildService({ row: baseRow() });
+
+  await service.handleDeliverCallback({
+    clientId: CLIENT_ID,
+    idempotencyKey: IDEMPOTENCY_KEY,
+    payload: { error: true, errorCode: 'AIKB_TIMEOUT' },
+  });
+
+  assert.equal(citationAttributionService.calls.length, 0);
 });
 
 test('a knowledge-gap payload delivers the approved fallback message', async () => {
