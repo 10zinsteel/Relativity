@@ -178,60 +178,10 @@ router.post('/connections/:id/disconnect', clientAuth, async (req, res) => {
   }
 });
 
-/**
- * POST /api/integrations/email/connections/:id/pause
- * POST /api/integrations/email/connections/:id/resume
- * Self-service only (EM8 — §14.1, §Lifecycle "Paused", §31) — same
- * ownership shape as disconnect above (reuses
- * canDisconnectConnection). The gap EM4's own record flagged (no
- * pause/resume route existed anywhere) — see emailConnectionService.js's
- * pauseConnection/resumeConnection for the pre_pause_sync_mode bookkeeping
- * that lets /resume restore the member's actual prior mode rather than
- * always defaulting to manual_selected.
- */
-router.post('/connections/:id/pause', clientAuth, async (req, res) => {
-  const { id } = req.params;
-  try {
-    const connection = await oauthConnectionsService.getConnectionById(id);
-    if (!connection || connection.client_id !== req.client.id || connection.provider !== PROVIDER) {
-      return res.status(404).json({ error: 'Connection not found.' });
-    }
-    if (!canDisconnectConnection({ connection, actingMemberId: req.member.id })) {
-      return res.status(403).json({ error: 'Insufficient permissions' });
-    }
-
-    const result = await emailConnectionService.pauseConnection({ clientId: req.client.id, oauthConnectionId: id });
-    res.json(result);
-  } catch (err) {
-    if (err.code === 'CONNECTION_NOT_FOUND') {
-      return res.status(404).json({ error: 'Connection not found.' });
-    }
-    console.error('POST /api/integrations/email/connections/:id/pause error:', err.message);
-    res.status(500).json({ error: 'Could not pause this connection.' });
-  }
-});
-
-router.post('/connections/:id/resume', clientAuth, async (req, res) => {
-  const { id } = req.params;
-  try {
-    const connection = await oauthConnectionsService.getConnectionById(id);
-    if (!connection || connection.client_id !== req.client.id || connection.provider !== PROVIDER) {
-      return res.status(404).json({ error: 'Connection not found.' });
-    }
-    if (!canDisconnectConnection({ connection, actingMemberId: req.member.id })) {
-      return res.status(403).json({ error: 'Insufficient permissions' });
-    }
-
-    const result = await emailConnectionService.resumeConnection({ clientId: req.client.id, oauthConnectionId: id });
-    res.json(result);
-  } catch (err) {
-    if (err.code === 'CONNECTION_NOT_FOUND') {
-      return res.status(404).json({ error: 'Connection not found.' });
-    }
-    console.error('POST /api/integrations/email/connections/:id/resume error:', err.message);
-    res.status(500).json({ error: 'Could not resume this connection.' });
-  }
-});
+// EM8's pause/resume routes (POST /connections/:id/pause, /resume) were
+// removed in EM10.7 — see EMAIL_INGESTION.md's EM10.7 record. A member who
+// wants to stop syncing now disconnects; there is no lighter-weight
+// temporary-stop control.
 
 /**
  * GET /api/integrations/email/member-settings

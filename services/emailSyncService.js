@@ -57,7 +57,6 @@ const RECONCILIATION_LIST_SIZE = 500;
 const ERROR_CODES = Object.freeze({
   SEARCH_DISABLED: 'SEARCH_DISABLED',
   SYNC_DISABLED: 'SYNC_DISABLED',
-  SYNC_PAUSED: 'SYNC_PAUSED',
   DOCUMENT_LIMIT_REACHED: 'DOCUMENT_LIMIT_REACHED',
   INVALID_RESUME: 'INVALID_RESUME',
 });
@@ -209,15 +208,12 @@ const defaultEmailSyncRepo = {
  * provider call is made. Every branch maps to a single named reason so a
  * rejection is always attributable, never a generic failure.
  */
-function assertSyncAllowed({ memberSearchEnabled, syncEnabled, syncMode }) {
+function assertSyncAllowed({ memberSearchEnabled, syncEnabled }) {
   if (!memberSearchEnabled) {
     throw syncError(ERROR_CODES.SEARCH_DISABLED, 'This mailbox is not contributing to search (search_enabled is off).');
   }
   if (!syncEnabled) {
     throw syncError(ERROR_CODES.SYNC_DISABLED, 'Sync is disabled for this connection.');
-  }
-  if (syncMode === 'paused') {
-    throw syncError(ERROR_CODES.SYNC_PAUSED, 'This connection is paused.');
   }
 }
 
@@ -729,7 +725,6 @@ function createEmailSyncService({
     assertSyncAllowed({
       memberSearchEnabled,
       syncEnabled: emailConnectionRow.sync_enabled,
-      syncMode: emailConnectionRow.sync_mode,
     });
 
     let resolvedRunType;

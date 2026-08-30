@@ -107,19 +107,8 @@ test('Email integration routes — auth gating and safe callback redirects', asy
   // POST /connections/:id/sync-mode along with Automatic Email Ingestion
   // itself — see EMAIL_INGESTION.md's EM10.6 record.)
 
-  // EM8 — pause/resume (§14.1, §Lifecycle "Paused", §31). Same limitation
-  // as above: the owns-this-connection gate runs only after clientAuth
-  // succeeds; see test/emailConnectionService.test.js for
-  // pauseConnection/resumeConnection's own DI-faked coverage.
-  await t.test('POST /api/integrations/email/connections/:id/pause requires authentication', async () => {
-    const res = await fetch(`${base}/api/integrations/email/connections/conn-1/pause`, { method: 'POST', redirect: 'manual' });
-    assert.equal(res.status, 401);
-  });
-
-  await t.test('POST /api/integrations/email/connections/:id/resume requires authentication', async () => {
-    const res = await fetch(`${base}/api/integrations/email/connections/conn-1/resume`, { method: 'POST', redirect: 'manual' });
-    assert.equal(res.status, 401);
-  });
+  // EM8's pause/resume routes were removed in EM10.7 — see
+  // EMAIL_INGESTION.md's EM10.7 record.
 
   await t.test('GET /api/integrations/email/member-settings requires authentication', async () => {
     const res = await fetch(`${base}/api/integrations/email/member-settings`, { redirect: 'manual' });

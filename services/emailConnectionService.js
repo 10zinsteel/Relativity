@@ -18,8 +18,10 @@
 // (EM4 originally let a member switch their own connection's sync_mode
 // between manual_selected/automatic; that endpoint and Automatic Email
 // Ingestion itself were removed in EM10.6 — Gmail ingestion is label-driven
-// only now, see EMAIL_INGESTION.md's EM10.6 record. Pause/resume, EM8,
-// remain: they're a general lifecycle control, not automatic-mode-specific.)
+// only now, see EMAIL_INGESTION.md's EM10.6 record. EM8's pause/resume
+// lifecycle control was removed in EM10.7 — see EMAIL_INGESTION.md's EM10.7
+// record — so sync_mode is now fixed at 'manual_selected' for the life of a
+// connection; only a full disconnect/reconnect ever changes it.)
 //
 // Disconnect was self-service ONLY in EM2 — a member could disconnect only
 // their own connection, with no owner/admin override, even though §14.1's
@@ -29,10 +31,10 @@
 // and policy reconciliation) — see disconnect() below and the EM9
 // Implementation Record in EMAIL_INGESTION.md. canDisconnectConnection
 // itself is UNCHANGED by EM9 — it still expresses only "is this your own
-// connection," since pauseConnection/resumeConnection/sync/
-// preview all reuse it for their own self-service-only shape, which EM9
-// does not touch; the owner/admin override lives only in the disconnect
-// route's own authorization check, not in this shared predicate.
+// connection," since sync/preview both reuse it for their own
+// self-service-only shape, which EM9 does not touch; the owner/admin
+// override lives only in the disconnect route's own authorization check,
+// not in this shared predicate.
 
 const { createClient } = require('@supabase/supabase-js');
 const { supabase: supabaseConfig } = require('../config');
@@ -41,11 +43,6 @@ const defaultGmailService = require('./gmailService');
 const defaultOauthConnectionsService = require('./oauthConnectionsService');
 const defaultSupabaseService = require('./supabaseService');
 const defaultAikbService = require('./aikbService');
-
-// EM10.6 — 'automatic' removed; 'manual_selected' is the only mode a
-// connection is ever explicitly set to (pause/resume also use 'paused',
-// tracked separately below, not part of this list).
-const SYNC_MODES = ['manual_selected'];
 
 // EM5 — refresh a stored Gmail access token this many ms before its known
 // expiry, not only after it has already failed. Gmail access tokens are
@@ -138,36 +135,6 @@ const defaultEmailConnectionsRepo = {
     return data || null;
   },
 
-  // EM8 (§14.1 POST /connections/:id/pause) — remembers the mode the
-  // connection was actually in via pre_pause_sync_mode, so resumeConnection
-  // below can restore it exactly, per §Lifecycle: "/resume restores the
-  // member's prior mode."
-  async pauseConnection(oauthConnectionId, priorSyncMode) {
-    const { data, error } = await defaultDbClient
-      .from('email_connections')
-      .update({ sync_mode: 'paused', pre_pause_sync_mode: priorSyncMode, updated_at: new Date().toISOString() })
-      .eq('oauth_connection_id', oauthConnectionId)
-      .select('*')
-      .maybeSingle();
-
-    if (error) throw new Error(`pauseConnection failed: ${error.message}`);
-    return data || null;
-  },
-
-  // EM8 (§14.1 POST /connections/:id/resume) — restores sync_mode to
-  // restoredSyncMode and clears pre_pause_sync_mode (a resumed connection
-  // has nothing left to remember until it's paused again).
-  async resumeConnection(oauthConnectionId, restoredSyncMode) {
-    const { data, error } = await defaultDbClient
-      .from('email_connections')
-      .update({ sync_mode: restoredSyncMode, pre_pause_sync_mode: null, updated_at: new Date().toISOString() })
-      .eq('oauth_connection_id', oauthConnectionId)
-      .select('*')
-      .maybeSingle();
-
-    if (error) throw new Error(`resumeConnection failed: ${error.message}`);
-    return data || null;
-  },
 };
 
 /**
@@ -469,76 +436,10 @@ function createEmailConnectionService({
   }
 
   // EM10.6 removed updateSyncMode (POST /connections/:id/sync-mode) along
-  // with Automatic Email Ingestion itself — a connection's sync_mode is no
-  // longer a member choice between two modes; only pause/resume (below)
-  // ever change it now. See EMAIL_INGESTION.md's EM10.6 record.
-
-  /**
-   * EM8 (§14.1 POST /connections/:id/pause, §Lifecycle "Paused") —
-   * self-service only, same ownership shape as disconnect above (the
-   * route enforces canDisconnectConnection before calling this). Records
-   * the connection's current sync_mode into pre_pause_sync_mode BEFORE
-   * overwriting it, so resumeConnection can restore the member's actual
-   * prior mode rather than defaulting to manual_selected. Idempotent: an
-   * already-paused connection is left untouched (never overwrites
-   * pre_pause_sync_mode with 'paused' itself).
-   */
-  async function pauseConnection({ clientId, oauthConnectionId }) {
-    if (!clientId) throw new Error('pauseConnection requires clientId');
-    if (!oauthConnectionId) throw new Error('pauseConnection requires oauthConnectionId');
-
-    const current = await emailConnectionsRepo.getByOauthConnectionId(oauthConnectionId);
-    if (!current) {
-      const err = new Error('Email connection not found.');
-      err.code = 'CONNECTION_NOT_FOUND';
-      throw err;
-    }
-    if (current.sync_mode === 'paused') {
-      return { syncMode: 'paused' };
-    }
-
-    const updated = await emailConnectionsRepo.pauseConnection(oauthConnectionId, current.sync_mode);
-    if (!updated) {
-      const err = new Error('Email connection not found.');
-      err.code = 'CONNECTION_NOT_FOUND';
-      throw err;
-    }
-    return { syncMode: updated.sync_mode };
-  }
-
-  /**
-   * EM8 (§14.1 POST /connections/:id/resume, §Lifecycle "Paused") —
-   * restores whatever sync_mode pauseConnection recorded, defaulting
-   * defensively to manual_selected if pre_pause_sync_mode is somehow unset
-   * or unrecognized (e.g. a connection paused before this migration
-   * existed, or paused while still in the now-removed 'automatic' mode
-   * pre-EM10.6 — SYNC_MODES.includes() falls through to manual_selected in
-   * both cases). A no-op (returns the current mode unchanged) if the
-   * connection isn't paused — there's nothing to resume from.
-   */
-  async function resumeConnection({ clientId, oauthConnectionId }) {
-    if (!clientId) throw new Error('resumeConnection requires clientId');
-    if (!oauthConnectionId) throw new Error('resumeConnection requires oauthConnectionId');
-
-    const current = await emailConnectionsRepo.getByOauthConnectionId(oauthConnectionId);
-    if (!current) {
-      const err = new Error('Email connection not found.');
-      err.code = 'CONNECTION_NOT_FOUND';
-      throw err;
-    }
-    if (current.sync_mode !== 'paused') {
-      return { syncMode: current.sync_mode };
-    }
-
-    const restoredMode = SYNC_MODES.includes(current.pre_pause_sync_mode) ? current.pre_pause_sync_mode : 'manual_selected';
-    const updated = await emailConnectionsRepo.resumeConnection(oauthConnectionId, restoredMode);
-    if (!updated) {
-      const err = new Error('Email connection not found.');
-      err.code = 'CONNECTION_NOT_FOUND';
-      throw err;
-    }
-    return { syncMode: updated.sync_mode };
-  }
+  // with Automatic Email Ingestion itself, and EM10.7 removed pause/resume
+  // (EM8) — a connection's sync_mode is now fixed at 'manual_selected' for
+  // its entire life; nothing ever changes it after connect. See
+  // EMAIL_INGESTION.md's EM10.6 and EM10.7 records.
 
   /**
    * EM5 — returns a Gmail access token guaranteed valid for at least
@@ -646,8 +547,6 @@ function createEmailConnectionService({
     handleCallback,
     getConnections,
     disconnect,
-    pauseConnection,
-    resumeConnection,
     getValidGmailAccessToken,
     getEmailConnectionRecord,
     ensureManagedLabel,

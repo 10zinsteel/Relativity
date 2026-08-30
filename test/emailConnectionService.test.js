@@ -20,8 +20,6 @@ function makeFakes(overrides = {}) {
     upsertConnection: [],
     getByOauthConnectionId: [],
     getConnectionById: [],
-    pauseConnection: [],
-    resumeConnection: [],
     getOrCreateManagedLabel: [],
     updateManagedLabelId: [],
     refreshAccessToken: [],
@@ -190,20 +188,7 @@ function makeFakes(overrides = {}) {
         sync_mode: 'manual_selected',
         sync_enabled: true,
         historical_import_status: 'not_started',
-        pre_pause_sync_mode: null,
       };
-    },
-    // EM8 — POST /connections/:id/pause.
-    pauseConnection: async (oauthConnectionId, priorSyncMode) => {
-      calls.pauseConnection.push({ oauthConnectionId, priorSyncMode });
-      if (overrides.pauseConnection) return overrides.pauseConnection(oauthConnectionId, priorSyncMode);
-      return { oauth_connection_id: oauthConnectionId, sync_mode: 'paused', pre_pause_sync_mode: priorSyncMode };
-    },
-    // EM8 — POST /connections/:id/resume.
-    resumeConnection: async (oauthConnectionId, restoredSyncMode) => {
-      calls.resumeConnection.push({ oauthConnectionId, restoredSyncMode });
-      if (overrides.resumeConnection) return overrides.resumeConnection(oauthConnectionId, restoredSyncMode);
-      return { oauth_connection_id: oauthConnectionId, sync_mode: restoredSyncMode, pre_pause_sync_mode: null };
     },
     // EM5 — ensureManagedLabel's lazy-backfill write path.
     updateManagedLabelId: async (oauthConnectionId, managedLabelId) => {
@@ -780,86 +765,9 @@ test('canDisconnectConnection denies when actingMemberId is missing, even if a c
 });
 
 // EM10.6 removed updateSyncMode (POST /connections/:id/sync-mode) along
-// with Automatic Email Ingestion itself — a connection's sync_mode is no
-// longer a member choice between modes; see EMAIL_INGESTION.md's EM10.6
-// record and pauseConnection/resumeConnection's own tests below for the
-// only remaining sync_mode writes.
-
-// ─────────────────────────────────────────────
-// pauseConnection / resumeConnection (EM8 — §14.1 POST .../pause | /resume,
-// §Lifecycle "Paused")
-// ─────────────────────────────────────────────
-
-test('pauseConnection remembers the connection\'s CURRENT sync_mode before overwriting it to paused', async () => {
-  const { service, calls } = makeFakes({
-    getByOauthConnectionId: async (oauthConnectionId) => ({ oauth_connection_id: oauthConnectionId, sync_mode: 'manual_selected', pre_pause_sync_mode: null }),
-  });
-  const result = await service.pauseConnection({ clientId: 'client-a', oauthConnectionId: 'conn-1' });
-  assert.deepEqual(result, { syncMode: 'paused' });
-  assert.equal(calls.pauseConnection.length, 1);
-  assert.deepEqual(calls.pauseConnection[0], { oauthConnectionId: 'conn-1', priorSyncMode: 'manual_selected' });
-});
-
-test('pauseConnection on an already-paused connection is a no-op — never overwrites pre_pause_sync_mode with "paused" itself', async () => {
-  const { service, calls } = makeFakes({
-    getByOauthConnectionId: async (oauthConnectionId) => ({ oauth_connection_id: oauthConnectionId, sync_mode: 'paused', pre_pause_sync_mode: 'manual_selected' }),
-  });
-  const result = await service.pauseConnection({ clientId: 'client-a', oauthConnectionId: 'conn-1' });
-  assert.deepEqual(result, { syncMode: 'paused' });
-  assert.equal(calls.pauseConnection.length, 0, 'must not write when already paused');
-});
-
-test('pauseConnection surfaces CONNECTION_NOT_FOUND when no email_connections row exists', async () => {
-  const { service } = makeFakes({ getByOauthConnectionId: async () => null });
-  await assert.rejects(
-    () => service.pauseConnection({ clientId: 'client-a', oauthConnectionId: 'conn-missing' }),
-    (err) => err.code === 'CONNECTION_NOT_FOUND'
-  );
-});
-
-test('resumeConnection restores the exact prior mode recorded by pauseConnection', async () => {
-  const { service, calls } = makeFakes({
-    getByOauthConnectionId: async (oauthConnectionId) => ({ oauth_connection_id: oauthConnectionId, sync_mode: 'paused', pre_pause_sync_mode: 'manual_selected' }),
-  });
-  const result = await service.resumeConnection({ clientId: 'client-a', oauthConnectionId: 'conn-1' });
-  assert.deepEqual(result, { syncMode: 'manual_selected' });
-  assert.deepEqual(calls.resumeConnection[0], { oauthConnectionId: 'conn-1', restoredSyncMode: 'manual_selected' });
-});
-
-test('resumeConnection defaults to manual_selected when pre_pause_sync_mode is an unrecognized/legacy value (e.g. "automatic" — removed in EM10.6, SYNC_MODES.includes() now falls through)', async () => {
-  const { service, calls } = makeFakes({
-    getByOauthConnectionId: async (oauthConnectionId) => ({ oauth_connection_id: oauthConnectionId, sync_mode: 'paused', pre_pause_sync_mode: 'automatic' }),
-  });
-  const result = await service.resumeConnection({ clientId: 'client-a', oauthConnectionId: 'conn-1' });
-  assert.deepEqual(result, { syncMode: 'manual_selected' });
-  assert.deepEqual(calls.resumeConnection[0], { oauthConnectionId: 'conn-1', restoredSyncMode: 'manual_selected' });
-});
-
-test('resumeConnection defaults to manual_selected when pre_pause_sync_mode is unset (e.g. paused before this migration existed)', async () => {
-  const { service, calls } = makeFakes({
-    getByOauthConnectionId: async (oauthConnectionId) => ({ oauth_connection_id: oauthConnectionId, sync_mode: 'paused', pre_pause_sync_mode: null }),
-  });
-  const result = await service.resumeConnection({ clientId: 'client-a', oauthConnectionId: 'conn-1' });
-  assert.deepEqual(result, { syncMode: 'manual_selected' });
-  assert.deepEqual(calls.resumeConnection[0], { oauthConnectionId: 'conn-1', restoredSyncMode: 'manual_selected' });
-});
-
-test('resumeConnection on a connection that is not paused is a no-op, returning its current mode unchanged', async () => {
-  const { service, calls } = makeFakes({
-    getByOauthConnectionId: async (oauthConnectionId) => ({ oauth_connection_id: oauthConnectionId, sync_mode: 'manual_selected', pre_pause_sync_mode: null }),
-  });
-  const result = await service.resumeConnection({ clientId: 'client-a', oauthConnectionId: 'conn-1' });
-  assert.deepEqual(result, { syncMode: 'manual_selected' });
-  assert.equal(calls.resumeConnection.length, 0, 'must not write when not paused');
-});
-
-test('resumeConnection surfaces CONNECTION_NOT_FOUND when no email_connections row exists', async () => {
-  const { service } = makeFakes({ getByOauthConnectionId: async () => null });
-  await assert.rejects(
-    () => service.resumeConnection({ clientId: 'client-a', oauthConnectionId: 'conn-missing' }),
-    (err) => err.code === 'CONNECTION_NOT_FOUND'
-  );
-});
+// with Automatic Email Ingestion itself, and EM10.7 removed pause/resume
+// (EM8) — a connection's sync_mode is now fixed at 'manual_selected' for
+// its entire life; see EMAIL_INGESTION.md's EM10.6 and EM10.7 records.
 
 // ─────────────────────────────────────────────
 // mapGmailConnectionResponse — pure response mapping

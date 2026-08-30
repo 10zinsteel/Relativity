@@ -210,27 +210,20 @@ function makeService({
 
 test('assertSyncAllowed throws SEARCH_DISABLED when the member has search_enabled off', () => {
   assert.throws(
-    () => assertSyncAllowed({ memberSearchEnabled: false, syncEnabled: true, syncMode: 'manual_selected' }),
+    () => assertSyncAllowed({ memberSearchEnabled: false, syncEnabled: true }),
     (err) => err.code === ERROR_CODES.SEARCH_DISABLED
   );
 });
 
 test('assertSyncAllowed throws SYNC_DISABLED when the connection itself is disabled', () => {
   assert.throws(
-    () => assertSyncAllowed({ memberSearchEnabled: true, syncEnabled: false, syncMode: 'manual_selected' }),
+    () => assertSyncAllowed({ memberSearchEnabled: true, syncEnabled: false }),
     (err) => err.code === ERROR_CODES.SYNC_DISABLED
   );
 });
 
-test('assertSyncAllowed throws SYNC_PAUSED for a paused connection', () => {
-  assert.throws(
-    () => assertSyncAllowed({ memberSearchEnabled: true, syncEnabled: true, syncMode: 'paused' }),
-    (err) => err.code === ERROR_CODES.SYNC_PAUSED
-  );
-});
-
-test('assertSyncAllowed does not throw for a healthy manual_selected connection', () => {
-  assert.doesNotThrow(() => assertSyncAllowed({ memberSearchEnabled: true, syncEnabled: true, syncMode: 'manual_selected' }));
+test('assertSyncAllowed does not throw for a healthy connection', () => {
+  assert.doesNotThrow(() => assertSyncAllowed({ memberSearchEnabled: true, syncEnabled: true }));
 });
 
 // ─────────────────────────────────────────────

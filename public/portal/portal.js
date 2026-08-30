@@ -351,13 +351,6 @@
   const emailSearchEnabledToggle    = document.getElementById('email-search-enabled-toggle');
   const emailMailboxSettingsStatus  = document.getElementById('email-mailbox-settings-save-status');
 
-  // EM8 — pause/resume (§14.1, §Lifecycle "Paused", §31), shown only while
-  // connected. (The "next automatic sync" display this section also used to
-  // render was removed in EM10.6 alongside automatic mode.)
-  const emailPauseBtn          = document.getElementById('email-pause-btn');
-  const emailResumeBtn         = document.getElementById('email-resume-btn');
-  const emailPauseResumeStatus = document.getElementById('email-pause-resume-status');
-
   // EM5/EM6 — Gmail label workflow shell (§7, §10, §14.2, §17, §31): "Open
   // Gmail" shortcut, label instructions (manual mode only), and "Sync now"
   // (real historical import as of EM6).
@@ -390,8 +383,6 @@
       if (gmailDisconnectBtn) gmailDisconnectBtn.hidden = true;
       if (emailMailboxSettingsSection) emailMailboxSettingsSection.hidden = true;
       if (emailSyncShellSection) emailSyncShellSection.hidden = true;
-      if (emailPauseBtn) emailPauseBtn.hidden = true;
-      if (emailResumeBtn) emailResumeBtn.hidden = true;
       if (slackLinkSection) slackLinkSection.hidden = true;
       return;
     }
@@ -408,20 +399,6 @@
     }
 
     if (emailMailboxSettingsSection) emailMailboxSettingsSection.hidden = !isConnected;
-
-    // EM8 — pause/resume (§14.1, §Lifecycle "Paused"). Exactly one button
-    // visible at a time, based on the connection's current sync_mode.
-    if (isConnected && (emailPauseBtn || emailResumeBtn)) {
-      const isPaused = own.syncMode === 'paused';
-      if (emailPauseBtn) {
-        emailPauseBtn.hidden = isPaused;
-        emailPauseBtn.dataset.connectionId = own.connectionId;
-      }
-      if (emailResumeBtn) {
-        emailResumeBtn.hidden = !isPaused;
-        emailResumeBtn.dataset.connectionId = own.connectionId;
-      }
-    }
 
     if (slackLinkSection) slackLinkSection.hidden = !isConnected;
 
@@ -580,42 +557,6 @@
         emailSearchEnabledToggle.disabled = false;
       }
     });
-  }
-
-  // EM8 — pause/resume (§14.1, §Lifecycle "Paused", §31). Both simply
-  // re-fetch and re-render the whole card afterward (loadGmailStatus)
-  // rather than hand-patching every dependent piece of UI state (the
-  // pause/resume button visibility) — the connection's full state already
-  // has to be re-derived correctly, and GET /connections is cheap.
-  async function handlePauseOrResume(button, path, actionLabel) {
-    const connectionId = button.dataset.connectionId;
-    if (!connectionId) return;
-    button.disabled = true;
-    if (emailPauseResumeStatus) emailPauseResumeStatus.hidden = true;
-    try {
-      const res = await fetch(`/api/integrations/email/connections/${encodeURIComponent(connectionId)}/${path}`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${accessToken}` },
-      });
-      const body = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(body.error || `Could not ${actionLabel} this connection.`);
-      await loadGmailStatus();
-    } catch (err) {
-      if (emailPauseResumeStatus) {
-        emailPauseResumeStatus.textContent = err.message || `Could not ${actionLabel} this connection.`;
-        emailPauseResumeStatus.className = 'kb-upload-status kb-upload-status--error';
-        emailPauseResumeStatus.hidden = false;
-      }
-    } finally {
-      button.disabled = false;
-    }
-  }
-
-  if (emailPauseBtn) {
-    emailPauseBtn.addEventListener('click', () => handlePauseOrResume(emailPauseBtn, 'pause', 'pause'));
-  }
-  if (emailResumeBtn) {
-    emailResumeBtn.addEventListener('click', () => handlePauseOrResume(emailResumeBtn, 'resume', 'resume'));
   }
 
   // EM6/EM7 — "Sync now" runs real import: POST /connections/:id/sync
