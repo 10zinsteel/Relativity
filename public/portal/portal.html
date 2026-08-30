@@ -183,21 +183,6 @@
                     <ul id="email-sync-history-list" class="email-sync-history-list"></ul>
                   </div>
 
-                  <!-- EL7A (LIVE_EMAIL_LOOKUP.md §3.1) — Slack identity link.
-                       Shown only while a Gmail connection is active — linking
-                       is meaningless without a mailbox to link. Generates a
-                       short-lived code; live email lookup from Slack itself
-                       is not built yet (EL7B). -->
-                  <div id="slack-link-section" class="email-mailbox-settings-section" hidden>
-                    <p class="slack-collections-label">Search your email from Slack</p>
-                    <p class="email-policy-hint">Generate a code, then DM the Relativity bot in Slack: <code>link CODE</code></p>
-                    <div class="email-sync-now-row">
-                      <button type="button" class="btn-kb-new-chat" id="slack-link-generate-btn">Generate code</button>
-                      <span id="slack-link-status" class="kb-upload-status" hidden></span>
-                    </div>
-                    <p id="slack-link-code-display" class="email-policy-hint" hidden></p>
-                  </div>
-
                   <!-- EM3 — organization policy summary, every active member (read-only unless owner/admin). -->
                   <div id="email-policy-summary-section" class="email-policy-summary-section" hidden>
                     <p class="slack-collections-label">Organization email policy</p>

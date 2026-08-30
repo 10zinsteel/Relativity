@@ -17,8 +17,6 @@ const defaultSlackDeliveryService = require('./slackDeliveryService');
 const defaultAikbAskClient = require('./aikbAskClient');
 const defaultSlackCollectionAccessService = require('./slackCollectionAccessService');
 const defaultSlackDeliveryFailureService = require('./slackDeliveryFailureService');
-const defaultSlackUserLinkService = require('./slackUserLinkService');
-const defaultEmailLiveLookupService = require('./emailLiveLookupService');
 const { extractQuestion, EMPTY_QUESTION_REPLY } = require('./slackQuestionService');
 const { FALLBACK } = require('./slackAnswerFormatter');
 const { retryWithBackoff } = require('./retryWithBackoff');
@@ -41,41 +39,7 @@ const OUTCOME = Object.freeze({
   EMPTY_QUESTION: 'empty_question',
   ENQUEUED: 'enqueued',
   ASK_FAILED: 'ask_failed',
-  // EL7A (LIVE_EMAIL_LOOKUP.md §3.1) — a DM matched the "link CODE" pattern
-  // and was routed to slackUserLinkService instead of the AIKB ask
-  // pipeline, regardless of whether the code itself turned out valid.
-  SLACK_LINK_ATTEMPT: 'slack_link_attempt',
 });
-
-// EL7A — a DM is a link-code attempt only when it starts with the literal
-// word "link" followed by a token, never a bare code alone: a real
-// question that happens to be a short alphanumeric string ("K7XQ2P9M"?)
-// is vanishingly unlikely, but requiring the explicit trigger word removes
-// any ambiguity rather than relying on that unlikelihood. Case-insensitive
-// (Slack users won't reliably match the portal-displayed uppercase code).
-const LINK_COMMAND_PATTERN = /^\s*link[\s:]+([A-Za-z0-9]{4,12})\s*$/i;
-
-function matchLinkCodeMessage(text) {
-  if (typeof text !== 'string') return null;
-  const match = text.match(LINK_COMMAND_PATTERN);
-  return match ? match[1] : null;
-}
-
-function linkAttemptReplyText(result) {
-  switch (result.status) {
-    case 'linked':
-      return 'Your Slack account is now linked to your Relativity mailbox.';
-    case 'client_mismatch':
-    case 'not_found':
-      return "That code isn't valid. Generate a new one from the Relativity portal's Email panel and try again.";
-    case 'reused':
-      return 'That code has already been used. Generate a new one from the Relativity portal\'s Email panel and try again.';
-    case 'expired':
-      return 'That code has expired. Generate a new one from the Relativity portal\'s Email panel and try again.';
-    default:
-      return "Something went wrong linking your account. Please try again, or generate a new code from the portal.";
-  }
-}
 
 function createSlackEventsService({
   oauthConnectionsService = defaultOauthConnectionsService,
@@ -85,8 +49,6 @@ function createSlackEventsService({
   aikbAskClient = defaultAikbAskClient,
   slackCollectionAccessService = defaultSlackCollectionAccessService,
   slackDeliveryFailureService = defaultSlackDeliveryFailureService,
-  slackUserLinkService = defaultSlackUserLinkService,
-  emailLiveLookupService = defaultEmailLiveLookupService,
   sleep,
 } = {}) {
   /**
@@ -201,28 +163,6 @@ function createSlackEventsService({
       return { status: 200, outcome: OUTCOME.DUPLICATE, duplicate: true };
     }
 
-    // EL7A — only ever intercepted in a DM: a channel @mention never
-    // triggers link parsing, matching §3.3's conservative MVP policy
-    // (nothing live-lookup-shaped is treated specially in a channel
-    // context). Checked before extractQuestion/the AIKB ask pipeline —
-    // this never reaches AIKB at all, linked or not.
-    if (isDirectMessage) {
-      const linkCodeAttempt = matchLinkCodeMessage(event.text);
-      if (linkCodeAttempt) {
-        const result = await slackUserLinkService.completeLink({
-          rawCode: linkCodeAttempt,
-          clientId: client.id,
-          slackTeamId: teamId,
-          slackUserId: event.user,
-        });
-        await replyDirectly({
-          connection, channel: event.channel, threadTs, text: linkAttemptReplyText(result), row,
-          slackEventLogService, slackDeliveryService, oauthConnectionsService, slackDeliveryFailureService, sleep,
-        });
-        return { status: 200, outcome: OUTCOME.SLACK_LINK_ATTEMPT, linkStatus: result.status };
-      }
-    }
-
     if (!extraction.ok) {
       await replyDirectly({
         connection, channel: event.channel, threadTs, text: EMPTY_QUESTION_REPLY, row,
@@ -231,25 +171,15 @@ function createSlackEventsService({
       return { status: 200, outcome: OUTCOME.EMPTY_QUESTION };
     }
 
-    // EL7B (LIVE_EMAIL_LOOKUP.md §3.2, §3.3) — requestingMemberId is
-    // resolved ONLY for a DM from a linked Slack user, never for a channel
-    // @mention regardless of link status: "channel @mentions never offer
-    // the tools regardless of link status" is a hard MVP policy, not an
-    // oversight, so this resolution is structurally unreachable for
-    // event.type === 'app_mention'. Re-resolved on every request — a
-    // stale/cached link is never trusted (§7B's own security requirement).
-    // emailLookupAvailable is the same cheap, DB-only, no-Gmail-call check
-    // the portal uses (EL6) — computed only when a member was actually
-    // resolved, since it's meaningless without one.
-    let requestingMemberId = null;
-    let emailLookupAvailable = false;
-    if (isDirectMessage) {
-      const linked = await slackUserLinkService.getLinkedMember({ clientId: client.id, slackUserId: event.user });
-      if (linked) {
-        requestingMemberId = linked.member_id;
-        emailLookupAvailable = await emailLiveLookupService.isLiveLookupAvailable({ clientId: client.id, requestingMemberId });
-      }
-    }
+    // EL7C (LIVE_EMAIL_LOOKUP.md) — Slack never resolves a requesting
+    // member or offers live email lookup: identity linking (EL7A) and
+    // Slack's live-lookup path (EL7B) were removed entirely, since Slack
+    // DMs have no session the way the portal does and the linking flow
+    // built to bridge that gap was never actually used. Live email lookup
+    // remains portal-only; AIKB already degrades gracefully for a null
+    // memberId/false emailLookupAvailable.
+    const requestingMemberId = null;
+    const emailLookupAvailable = false;
 
     // ADR-007: the fast accept-and-enqueue call to AIKB gets the same
     // bounded, immediate, in-flow retry treatment as Slack delivery itself
@@ -354,6 +284,4 @@ module.exports = {
   ...defaultService,
   createSlackEventsService,
   OUTCOME,
-  matchLinkCodeMessage,
-  linkAttemptReplyText,
 };

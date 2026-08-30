@@ -309,7 +309,7 @@ test('the token is never exposed anywhere in the result or thrown errors', async
   assert.ok(!JSON.stringify(result).includes('xoxb-SUPER-SECRET'));
 });
 
-test('EL7B: emailLookupSuggested:true in the payload appends the link-prompt hint to the delivered message', async () => {
+test('emailLookupSuggested:true in the payload appends the link-prompt hint to the delivered message', async () => {
   const { service, slackDeliveryService } = buildService({ row: baseRow() });
 
   await service.handleDeliverCallback({
@@ -318,10 +318,10 @@ test('EL7B: emailLookupSuggested:true in the payload appends the link-prompt hin
     payload: { answer: 'Not sure from our documents.', sources: [], isKnowledgeGap: false, emailLookupSuggested: true },
   });
 
-  assert.match(slackDeliveryService.calls[0].text, /link your Slack account/i);
+  assert.match(slackDeliveryService.calls[0].text, /Relativity portal's Email panel/i);
 });
 
-test('EL7B: omitting emailLookupSuggested changes nothing about the delivered message', async () => {
+test('omitting emailLookupSuggested changes nothing about the delivered message', async () => {
   const { service, slackDeliveryService } = buildService({ row: baseRow() });
 
   await service.handleDeliverCallback({
@@ -330,5 +330,5 @@ test('EL7B: omitting emailLookupSuggested changes nothing about the delivered me
     payload: { answer: 'You get 15 days of PTO.', sources: [], isKnowledgeGap: false },
   });
 
-  assert.doesNotMatch(slackDeliveryService.calls[0].text, /link your Slack account/i);
+  assert.doesNotMatch(slackDeliveryService.calls[0].text, /Relativity portal's Email panel/i);
 });

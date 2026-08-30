@@ -360,12 +360,6 @@
   const emailSyncNowStatus       = document.getElementById('email-sync-now-status');
   const emailPreviewResult       = document.getElementById('email-preview-result');
 
-  // EL7A (LIVE_EMAIL_LOOKUP.md §3.1) — Slack identity link.
-  const slackLinkSection     = document.getElementById('slack-link-section');
-  const slackLinkGenerateBtn = document.getElementById('slack-link-generate-btn');
-  const slackLinkStatus      = document.getElementById('slack-link-status');
-  const slackLinkCodeDisplay = document.getElementById('slack-link-code-display');
-
   function renderGmailStatus({ connections, configured }) {
     if (!gmailStatusBadge) return;
     const own = (connections || [])[0] || null;
@@ -383,7 +377,6 @@
       if (gmailDisconnectBtn) gmailDisconnectBtn.hidden = true;
       if (emailMailboxSettingsSection) emailMailboxSettingsSection.hidden = true;
       if (emailSyncShellSection) emailSyncShellSection.hidden = true;
-      if (slackLinkSection) slackLinkSection.hidden = true;
       return;
     }
 
@@ -399,8 +392,6 @@
     }
 
     if (emailMailboxSettingsSection) emailMailboxSettingsSection.hidden = !isConnected;
-
-    if (slackLinkSection) slackLinkSection.hidden = !isConnected;
 
     if (emailSyncShellSection) emailSyncShellSection.hidden = !isConnected;
     if (isConnected && emailSyncNowBtn) {
@@ -468,40 +459,6 @@
       } finally {
         gmailDisconnectBtn.disabled = false;
         loadGmailStatus();
-      }
-    });
-  }
-
-  // EL7A (LIVE_EMAIL_LOOKUP.md §3.1) — generates a short-lived code, shown
-  // to the member to type into a Slack DM ("link CODE") to the bot. The
-  // code itself is never persisted client-side beyond this in-memory
-  // display; a page reload simply requires generating a new one.
-  if (slackLinkGenerateBtn) {
-    slackLinkGenerateBtn.addEventListener('click', async () => {
-      slackLinkGenerateBtn.disabled = true;
-      if (slackLinkStatus) { slackLinkStatus.hidden = false; slackLinkStatus.textContent = 'Generating…'; }
-      if (slackLinkCodeDisplay) slackLinkCodeDisplay.hidden = true;
-      try {
-        const res = await fetch('/api/integrations/slack/link/generate-code', {
-          method: 'POST',
-          headers: { Authorization: `Bearer ${accessToken}` },
-        });
-        const body = await res.json().catch(() => ({}));
-        if (res.ok && body.code) {
-          if (slackLinkStatus) slackLinkStatus.hidden = true;
-          if (slackLinkCodeDisplay) {
-            const expires = body.expiresAt ? new Date(body.expiresAt).toLocaleTimeString() : null;
-            slackLinkCodeDisplay.innerHTML = `Your code: <code>${escHtml(body.code)}</code>${expires ? ` — expires ${escHtml(expires)}` : ''}. DM the bot in Slack: <code>link ${escHtml(body.code)}</code>`;
-            slackLinkCodeDisplay.hidden = false;
-          }
-        } else if (slackLinkStatus) {
-          slackLinkStatus.hidden = false;
-          slackLinkStatus.textContent = body.error || 'Could not generate a code.';
-        }
-      } catch {
-        if (slackLinkStatus) { slackLinkStatus.hidden = false; slackLinkStatus.textContent = 'Network error. Please try again.'; }
-      } finally {
-        slackLinkGenerateBtn.disabled = false;
       }
     });
   }

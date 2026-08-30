@@ -16,7 +16,6 @@ const slackIntegrationService = require('../../services/slackIntegrationService'
 const slackEventsService = require('../../services/slackEventsService');
 const slackDeliverService = require('../../services/slackDeliverService');
 const slackCollectionAccessService = require('../../services/slackCollectionAccessService');
-const slackUserLinkService = require('../../services/slackUserLinkService');
 const { verifySlackSignatureMiddleware } = require('../../services/slackSignatureService');
 
 const OWNER_ADMIN = ['owner', 'admin'];
@@ -87,29 +86,11 @@ router.get('/status', clientAuth, async (req, res) => {
   }
 });
 
-/**
- * POST /api/integrations/slack/link/generate-code
- * EL7A (LIVE_EMAIL_LOOKUP.md §3.1) — self-service, own member only (the
- * generated code is always bound to req.member.id, never a caller-supplied
- * id). Any authenticated, active member may generate one, same openness as
- * /status above — linking is a per-member action, not owner/admin-gated.
- * Returns { code, expiresAt }: a short, human-typeable code the member
- * pastes into a Slack DM to the bot ("link CODE") to complete the link.
- * The raw code is never stored anywhere — only its hash
- * (services/slackUserLinkService.js).
- */
-router.post('/link/generate-code', clientAuth, async (req, res) => {
-  try {
-    const result = await slackUserLinkService.generateLinkCode({
-      clientId: req.client.id,
-      memberId: req.member.id,
-    });
-    res.json(result);
-  } catch (err) {
-    console.error('POST /api/integrations/slack/link/generate-code error:', err.message);
-    res.status(500).json({ error: 'Could not generate a linking code. Please try again.' });
-  }
-});
+// POST /api/integrations/slack/link/generate-code has been removed (EL7C —
+// Architecture/architecture/LIVE_EMAIL_LOOKUP.md). Slack identity linking
+// (EL7A) and Slack's live-email-lookup path (EL7B) were removed entirely;
+// live email lookup remains portal-only, where the session already
+// resolves the asking member without any linking mechanism.
 
 /**
  * POST /api/integrations/slack/disconnect

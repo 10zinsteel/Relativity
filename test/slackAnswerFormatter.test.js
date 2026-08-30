@@ -160,13 +160,13 @@ test('a hybrid answer citing both a stored document and a live email renders bot
 test('emailLookupSuggested appends the link-prompt hint to a normal answer', () => {
   const text = formatSlackMessage({ answer: 'Here is what I found.', sources: [], isKnowledgeGap: false, emailLookupSuggested: true });
   assert.ok(text.startsWith('Here is what I found.'));
-  assert.match(text, /link your Slack account/i);
+  assert.match(text, /Relativity portal's Email panel/i);
 });
 
 test('emailLookupSuggested appends the hint even to a knowledge-gap answer — never a silent failure', () => {
   const text = formatSlackMessage({ answer: 'ignored', sources: [], isKnowledgeGap: true, emailLookupSuggested: true });
   assert.ok(text.startsWith(FALLBACK.KNOWLEDGE_GAP));
-  assert.match(text, /link your Slack account/i);
+  assert.match(text, /Relativity portal's Email panel/i);
 });
 
 test('emailLookupSuggested is omitted entirely when false/absent — no behavior change for every pre-EL7B caller', () => {

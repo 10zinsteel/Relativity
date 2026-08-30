@@ -149,7 +149,7 @@ test('backlog M13: a 1:1 DM (message/im) is processed exactly like an app_mentio
   const supabaseService = createFakeSupabaseService();
   const slackDeliveryService = createFakeSlackDeliveryService();
 
-  const service = createSlackEventsService({ sleep: NO_OP_SLEEP, slackEventLogService, aikbAskClient, oauthConnectionsService, supabaseService, slackDeliveryService, slackCollectionAccessService: createFakeSlackCollectionAccessService(['col-general']), slackUserLinkService: createFakeSlackUserLinkService() });
+  const service = createSlackEventsService({ sleep: NO_OP_SLEEP, slackEventLogService, aikbAskClient, oauthConnectionsService, supabaseService, slackDeliveryService, slackCollectionAccessService: createFakeSlackCollectionAccessService(['col-general']) });
   const result = await service.processEventCallback(baseEventCallback({
     event: { type: 'message', channel_type: 'im', text: 'What is our PTO policy?', channel: 'D1' },
   }));
@@ -159,7 +159,8 @@ test('backlog M13: a 1:1 DM (message/im) is processed exactly like an app_mentio
   assert.equal(aikbAskClient.calls[0].question, 'What is our PTO policy?', 'no mention prefix to strip in a DM — the raw text is the question');
   assert.equal(aikbAskClient.calls[0].origin, 'slack_dm');
   assert.deepEqual(aikbAskClient.calls[0].allowedCollectionIds, ['col-general'], 'DMs reuse the same client-wide allow-list as channel mentions — no per-member scoping');
-  assert.equal(aikbAskClient.calls[0].memberId, null, 'unlinked Slack user — no member resolved');
+  assert.equal(aikbAskClient.calls[0].memberId, null, 'EL7C: Slack never resolves a requesting member');
+  assert.equal(aikbAskClient.calls[0].emailLookupAvailable, false, 'EL7C: Slack never offers live email lookup');
 });
 
 test('backlog M13: a group DM (message/mpim) is explicitly unsupported, no AIKB call', async () => {
@@ -496,26 +497,12 @@ test('an empty mention: all 3 reply attempts fail — the row reaches delivery_f
 });
 
 // ─────────────────────────────────────────────
-// EL7A — Slack identity linking (LIVE_EMAIL_LOOKUP.md §3.1): a DM matching
-// "link CODE" is routed to slackUserLinkService, never reaching AIKB.
+// EL7C — Slack Live-Email Access Removal (LIVE_EMAIL_LOOKUP.md): identity
+// linking (EL7A) and Slack's live-lookup path (EL7B) were removed
+// entirely. A DM never resolves a requesting member, so a "link CODE"-
+// shaped message is just an ordinary question that falls through to AIKB
+// like any other.
 // ─────────────────────────────────────────────
-
-function createFakeSlackUserLinkService({ result = { status: 'linked', clientId: CLIENT_ID, memberId: 'member-1' }, linkedMember = null } = {}) {
-  const calls = [];
-  const getLinkedMemberCalls = [];
-  return {
-    calls,
-    getLinkedMemberCalls,
-    completeLink: async (params) => {
-      calls.push(params);
-      return result;
-    },
-    getLinkedMember: async (params) => {
-      getLinkedMemberCalls.push(params);
-      return linkedMember;
-    },
-  };
-}
 
 function dmEventCallback(text, overrides = {}) {
   return baseEventCallback({
@@ -523,200 +510,43 @@ function dmEventCallback(text, overrides = {}) {
   });
 }
 
-test('EL7A: a DM matching "link CODE" resolves via slackUserLinkService and never reaches AIKB', async () => {
+test('EL7C: a "link CODE"-shaped DM is treated as an ordinary question, never intercepted', async () => {
   const slackEventLogService = createFakeSlackEventLog();
   const aikbAskClient = createFakeAikbAskClient();
   const oauthConnectionsService = createFakeOauthConnectionsService();
   const supabaseService = createFakeSupabaseService();
   const slackDeliveryService = createFakeSlackDeliveryService();
-  const slackUserLinkService = createFakeSlackUserLinkService({ result: { status: 'linked', clientId: CLIENT_ID, memberId: 'member-1' } });
 
   const service = createSlackEventsService({
     sleep: NO_OP_SLEEP, slackEventLogService, aikbAskClient, oauthConnectionsService, supabaseService, slackDeliveryService,
-    slackUserLinkService, slackCollectionAccessService: createFakeSlackCollectionAccessService([]),
+    slackCollectionAccessService: createFakeSlackCollectionAccessService(['col-general']),
   });
   const result = await service.processEventCallback(dmEventCallback('link K7XQ2P9M'));
 
-  assert.equal(result.outcome, OUTCOME.SLACK_LINK_ATTEMPT);
-  assert.equal(result.linkStatus, 'linked');
-  assert.equal(aikbAskClient.calls.length, 0, 'a link-code DM must never reach the AIKB ask pipeline');
-  assert.equal(slackUserLinkService.calls.length, 1);
-  assert.equal(slackUserLinkService.calls[0].rawCode, 'K7XQ2P9M');
-  assert.equal(slackUserLinkService.calls[0].clientId, CLIENT_ID, 'the resolved workspace client, never trusted from the payload');
-  assert.equal(slackUserLinkService.calls[0].slackTeamId, TEAM_ID);
-  assert.equal(slackUserLinkService.calls[0].slackUserId, 'U0HUMAN');
-  assert.equal(slackDeliveryService.calls.length, 1);
-  assert.match(slackDeliveryService.calls[0].text, /now linked/i);
+  assert.equal(result.outcome, OUTCOME.ENQUEUED);
+  assert.equal(aikbAskClient.calls.length, 1);
+  assert.equal(aikbAskClient.calls[0].question, 'link K7XQ2P9M');
+  assert.equal(aikbAskClient.calls[0].memberId, null);
+  assert.equal(aikbAskClient.calls[0].emailLookupAvailable, false);
 });
 
-test('EL7A: an invalid/expired code gets a distinct safe reply, never a silent failure', async () => {
+test('EL7C: a channel @mention with "link CODE"-shaped text is likewise just an ordinary question', async () => {
   const slackEventLogService = createFakeSlackEventLog();
   const aikbAskClient = createFakeAikbAskClient();
   const oauthConnectionsService = createFakeOauthConnectionsService();
   const supabaseService = createFakeSupabaseService();
   const slackDeliveryService = createFakeSlackDeliveryService();
-  const slackUserLinkService = createFakeSlackUserLinkService({ result: { status: 'expired' } });
 
   const service = createSlackEventsService({
     sleep: NO_OP_SLEEP, slackEventLogService, aikbAskClient, oauthConnectionsService, supabaseService, slackDeliveryService,
-    slackUserLinkService, slackCollectionAccessService: createFakeSlackCollectionAccessService([]),
-  });
-  const result = await service.processEventCallback(dmEventCallback('link OLDCODE1'));
-
-  assert.equal(result.linkStatus, 'expired');
-  assert.equal(aikbAskClient.calls.length, 0);
-  assert.match(slackDeliveryService.calls[0].text, /expired/i);
-});
-
-test('EL7A: a channel @mention never triggers link parsing, even with "link CODE"-shaped text', async () => {
-  const slackEventLogService = createFakeSlackEventLog();
-  const aikbAskClient = createFakeAikbAskClient();
-  const oauthConnectionsService = createFakeOauthConnectionsService();
-  const supabaseService = createFakeSupabaseService();
-  const slackDeliveryService = createFakeSlackDeliveryService();
-  const slackUserLinkService = createFakeSlackUserLinkService();
-
-  const service = createSlackEventsService({
-    sleep: NO_OP_SLEEP, slackEventLogService, aikbAskClient, oauthConnectionsService, supabaseService, slackDeliveryService,
-    slackUserLinkService, slackCollectionAccessService: createFakeSlackCollectionAccessService(['col-general']),
+    slackCollectionAccessService: createFakeSlackCollectionAccessService(['col-general']),
   });
   const result = await service.processEventCallback(baseEventCallback({
     event: { type: 'app_mention', user: 'U0HUMAN', text: `<@${BOT_USER_ID}> link K7XQ2P9M`, channel: 'C1', ts: '1700000000.000000' },
   }));
 
-  assert.equal(slackUserLinkService.calls.length, 0, 'link parsing only ever applies to a DM, never a channel @mention');
-  assert.equal(result.outcome, OUTCOME.ENQUEUED, 'falls through to the ordinary ask pipeline, treated as a normal question');
-  assert.equal(aikbAskClient.calls.length, 1);
-});
-
-test('EL7A: a plain DM question (not "link ...") is unaffected — falls through to the ordinary ask pipeline', async () => {
-  const slackEventLogService = createFakeSlackEventLog();
-  const aikbAskClient = createFakeAikbAskClient();
-  const oauthConnectionsService = createFakeOauthConnectionsService();
-  const supabaseService = createFakeSupabaseService();
-  const slackDeliveryService = createFakeSlackDeliveryService();
-  const slackUserLinkService = createFakeSlackUserLinkService();
-
-  const service = createSlackEventsService({
-    sleep: NO_OP_SLEEP, slackEventLogService, aikbAskClient, oauthConnectionsService, supabaseService, slackDeliveryService,
-    slackUserLinkService, slackCollectionAccessService: createFakeSlackCollectionAccessService(['col-general']),
-  });
-  const result = await service.processEventCallback(dmEventCallback('Can you link me to the onboarding doc?'));
-
-  assert.equal(slackUserLinkService.calls.length, 0);
   assert.equal(result.outcome, OUTCOME.ENQUEUED);
   assert.equal(aikbAskClient.calls.length, 1);
-});
-
-// ─────────────────────────────────────────────
-// EL7B — Slack live-email access: requestingMemberId/emailLookupAvailable
-// resolution, DM-only (LIVE_EMAIL_LOOKUP.md §3.2, §3.3, §7B security
-// requirements).
-// ─────────────────────────────────────────────
-
-function createFakeEmailLiveLookupService({ available = true } = {}) {
-  const calls = [];
-  return {
-    calls,
-    isLiveLookupAvailable: async (params) => {
-      calls.push(params);
-      return available;
-    },
-  };
-}
-
-test('EL7B: a linked Slack user\'s DM resolves memberId and emailLookupAvailable, passed through to AIKB', async () => {
-  const slackEventLogService = createFakeSlackEventLog();
-  const aikbAskClient = createFakeAikbAskClient();
-  const oauthConnectionsService = createFakeOauthConnectionsService();
-  const supabaseService = createFakeSupabaseService();
-  const slackDeliveryService = createFakeSlackDeliveryService();
-  const slackUserLinkService = createFakeSlackUserLinkService({ linkedMember: { member_id: 'member-linked-1' } });
-  const emailLiveLookupService = createFakeEmailLiveLookupService({ available: true });
-
-  const service = createSlackEventsService({
-    sleep: NO_OP_SLEEP, slackEventLogService, aikbAskClient, oauthConnectionsService, supabaseService, slackDeliveryService,
-    slackUserLinkService, emailLiveLookupService, slackCollectionAccessService: createFakeSlackCollectionAccessService(['col-general']),
-  });
-  const result = await service.processEventCallback(dmEventCallback('Did Sarah reply about the renewal?', { user: 'U0LINKED' }));
-
-  assert.equal(result.outcome, OUTCOME.ENQUEUED);
-  assert.equal(slackUserLinkService.getLinkedMemberCalls.length, 1);
-  assert.equal(slackUserLinkService.getLinkedMemberCalls[0].clientId, CLIENT_ID);
-  assert.equal(slackUserLinkService.getLinkedMemberCalls[0].slackUserId, 'U0LINKED');
-  assert.equal(emailLiveLookupService.calls.length, 1);
-  assert.equal(emailLiveLookupService.calls[0].requestingMemberId, 'member-linked-1');
-  assert.equal(aikbAskClient.calls[0].memberId, 'member-linked-1');
-  assert.equal(aikbAskClient.calls[0].emailLookupAvailable, true);
-});
-
-test('EL7B: an unlinked Slack user\'s DM gets no memberId, never a silent failure — falls through to the ordinary ask pipeline', async () => {
-  const slackEventLogService = createFakeSlackEventLog();
-  const aikbAskClient = createFakeAikbAskClient();
-  const oauthConnectionsService = createFakeOauthConnectionsService();
-  const supabaseService = createFakeSupabaseService();
-  const slackDeliveryService = createFakeSlackDeliveryService();
-  const slackUserLinkService = createFakeSlackUserLinkService({ linkedMember: null });
-  const emailLiveLookupService = createFakeEmailLiveLookupService();
-
-  const service = createSlackEventsService({
-    sleep: NO_OP_SLEEP, slackEventLogService, aikbAskClient, oauthConnectionsService, supabaseService, slackDeliveryService,
-    slackUserLinkService, emailLiveLookupService, slackCollectionAccessService: createFakeSlackCollectionAccessService(['col-general']),
-  });
-  const result = await service.processEventCallback(dmEventCallback('Did Sarah reply about the renewal?', { user: 'U0UNLINKED' }));
-
-  assert.equal(result.outcome, OUTCOME.ENQUEUED);
   assert.equal(aikbAskClient.calls[0].memberId, null);
   assert.equal(aikbAskClient.calls[0].emailLookupAvailable, false);
-  assert.equal(emailLiveLookupService.calls.length, 0, 'no point checking availability for a member that was never resolved');
-});
-
-test('EL7B security requirement: a channel @mention NEVER resolves memberId/emailLookupAvailable, even from a linked Slack user', async () => {
-  const slackEventLogService = createFakeSlackEventLog();
-  const aikbAskClient = createFakeAikbAskClient();
-  const oauthConnectionsService = createFakeOauthConnectionsService();
-  const supabaseService = createFakeSupabaseService();
-  const slackDeliveryService = createFakeSlackDeliveryService();
-  const slackUserLinkService = createFakeSlackUserLinkService({ linkedMember: { member_id: 'member-linked-1' } });
-  const emailLiveLookupService = createFakeEmailLiveLookupService({ available: true });
-
-  const service = createSlackEventsService({
-    sleep: NO_OP_SLEEP, slackEventLogService, aikbAskClient, oauthConnectionsService, supabaseService, slackDeliveryService,
-    slackUserLinkService, emailLiveLookupService, slackCollectionAccessService: createFakeSlackCollectionAccessService(['col-general']),
-  });
-  const result = await service.processEventCallback(baseEventCallback({
-    event: { type: 'app_mention', user: 'U0LINKED', text: `<@${BOT_USER_ID}> Did Sarah reply about the renewal?`, channel: 'C1', ts: '1700000000.000000' },
-  }));
-
-  assert.equal(result.outcome, OUTCOME.ENQUEUED);
-  assert.equal(slackUserLinkService.getLinkedMemberCalls.length, 0, 'link resolution must never even be attempted for a channel @mention');
-  assert.equal(emailLiveLookupService.calls.length, 0);
-  assert.equal(aikbAskClient.calls[0].memberId, null);
-  assert.equal(aikbAskClient.calls[0].emailLookupAvailable, false);
-});
-
-test('EL7B: link resolution is re-verified on every request — a stale reference is never cached across calls', async () => {
-  const slackEventLogService = createFakeSlackEventLog();
-  const aikbAskClient = createFakeAikbAskClient();
-  const oauthConnectionsService = createFakeOauthConnectionsService();
-  const supabaseService = createFakeSupabaseService();
-  const slackDeliveryService = createFakeSlackDeliveryService();
-  const slackUserLinkService = createFakeSlackUserLinkService({ linkedMember: { member_id: 'member-linked-1' } });
-  const emailLiveLookupService = createFakeEmailLiveLookupService({ available: true });
-
-  const service = createSlackEventsService({
-    sleep: NO_OP_SLEEP, slackEventLogService, aikbAskClient, oauthConnectionsService, supabaseService, slackDeliveryService,
-    slackUserLinkService, emailLiveLookupService, slackCollectionAccessService: createFakeSlackCollectionAccessService(['col-general']),
-  });
-
-  await service.processEventCallback(baseEventCallback({
-    event_id: 'Ev-first',
-    event: { type: 'message', channel_type: 'im', user: 'U0LINKED', text: 'First question', channel: 'D1' },
-  }));
-  await service.processEventCallback(baseEventCallback({
-    event_id: 'Ev-second',
-    event: { type: 'message', channel_type: 'im', user: 'U0LINKED', text: 'Second question', channel: 'D1' },
-  }));
-
-  assert.equal(slackUserLinkService.getLinkedMemberCalls.length, 2, 'resolved fresh on every request, never cached');
 });

@@ -13,14 +13,12 @@ const TRUNCATION_SUFFIX = '…'; // ellipsis
 const FALLBACK = Object.freeze({
   KNOWLEDGE_GAP: "I couldn't find that information in your organization's knowledge base.",
   TEMPORARY_FAILURE: "I couldn't complete that request right now. Please try again shortly.",
-  // EL7B (LIVE_EMAIL_LOOKUP.md §3.2 — "an unlinked user gets the link-prompt,
-  // never a silent failure"): appended when AIKB signals
-  // emailLookupSuggested (services/slackDeliverService.js), covering both
-  // an unlinked Slack user and a linked one with no active/consented
-  // mailbox — deliberately generic wording rather than guessing which case
-  // applies, since Relativity doesn't re-check that distinction at deliver
-  // time.
-  EMAIL_LOOKUP_SUGGESTED: "\n\n_I can search your email for questions like this once you link your Slack account or connect email search — see the Relativity portal's Email panel._",
+  // EL7C (LIVE_EMAIL_LOOKUP.md) — appended when AIKB signals
+  // emailLookupSuggested (services/slackDeliverService.js). Slack never
+  // resolves a requesting member or offers live email lookup (EL7A/EL7B
+  // were removed entirely), so this always points to the portal, the only
+  // place live email lookup is available.
+  EMAIL_LOOKUP_SUGGESTED: "\n\n_I can search your email for questions like this from the Relativity portal's Email panel._",
 });
 
 function truncateAnswer(text) {

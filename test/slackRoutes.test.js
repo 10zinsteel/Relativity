@@ -50,14 +50,6 @@ test('Slack routes — auth gating, retirement, and safe callback redirects', as
     assert.equal(res.status, 401);
   });
 
-  // EL7A (LIVE_EMAIL_LOOKUP.md §3.1) — the link-code-generation endpoint's
-  // full flow (a real code, its hash-only storage, cross-member isolation)
-  // is covered at the service layer in test/slackUserLinkService.test.js.
-  await t.test('POST /api/integrations/slack/link/generate-code requires authentication', async () => {
-    const res = await fetch(`${base}/api/integrations/slack/link/generate-code`, { method: 'POST', redirect: 'manual' });
-    assert.equal(res.status, 401);
-  });
-
   await t.test('GET /api/integrations/slack/callback with a denial error redirects to the safe access_denied path', async () => {
     const res = await fetch(`${base}/api/integrations/slack/callback?error=access_denied`, { redirect: 'manual' });
     assert.equal(res.status, 302);
