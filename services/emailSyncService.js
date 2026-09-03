@@ -175,14 +175,35 @@ const defaultEmailSyncRepo = {
   },
 
   // §24.2 reconciliation (full-list variant, historical sync only) — every
-  // message this connection has ever successfully queued for ingestion,
-  // across every past sync run, so a label removed since ANY prior sync
-  // (not just the most recent one) is still caught.
-  async getPreviouslyIngestedMessageIds(emailConnectionId) {
+  // message this MAILBOX has ever successfully queued for ingestion, across
+  // every past sync run, so a label removed since ANY prior sync (not just
+  // the most recent one) is still caught. Bug fix (found during EM10.5 B8
+  // setup, 2026-09-02): a reconnect (disconnect+reconnect, or a fresh OAuth
+  // grant replacing the active connection — Scenario 6's validated,
+  // intentional behavior) gives the same mailbox a NEW email_connections.id.
+  // Scoping this lookup to a single connection id therefore made every
+  // message ingested under a prior connection row invisible to both
+  // reconciliation passes (this one and reconcilePolicyChanges) the moment a
+  // mailbox was reconnected — label removal and policy-change tombstoning
+  // both silently stopped catching that mailbox's older content. Scoped
+  // instead by the durable mailbox identity (client + member + provider +
+  // address), across every connection row that identity has ever had.
+  async getPreviouslyIngestedMessageIds(emailConnectionRow) {
+    const { data: relatedConnections, error: relError } = await defaultDbClient
+      .from('email_connections')
+      .select('id')
+      .eq('client_id', emailConnectionRow.client_id)
+      .eq('member_id', emailConnectionRow.member_id)
+      .eq('provider', emailConnectionRow.provider)
+      .eq('mailbox_address', emailConnectionRow.mailbox_address);
+    if (relError) throw new Error(`getPreviouslyIngestedMessageIds (connection lookup) failed: ${relError.message}`);
+    const connectionIds = (relatedConnections || []).map((row) => row.id);
+    if (connectionIds.length === 0) return [];
+
     const { data, error } = await defaultDbClient
       .from('email_ingestion_events')
       .select('provider_message_id')
-      .eq('email_connection_id', emailConnectionId)
+      .in('email_connection_id', connectionIds)
       .eq('outcome', 'ingested');
     if (error) throw new Error(`getPreviouslyIngestedMessageIds failed: ${error.message}`);
     return Array.from(new Set((data || []).map((row) => row.provider_message_id)));
@@ -439,7 +460,7 @@ async function reconcileRemovedLabelsFullList({ gmailService, emailSyncRepo, aik
 
   try {
     const [previouslyIngested, { messageIds: currentlyLabeled }] = await Promise.all([
-      emailSyncRepo.getPreviouslyIngestedMessageIds(emailConnectionRow.id),
+      emailSyncRepo.getPreviouslyIngestedMessageIds(emailConnectionRow),
       gmailService.listMessageIdsByQuery({
         accessToken,
         query: gmailService.compileSearchQuery({ mode: 'manual_selected', rules: [] }),
@@ -497,7 +518,7 @@ const POLICY_RECONCILIATION_LIST_SIZE = 500;
 
 async function reconcilePolicyChanges({ gmailService, emailPolicyService, emailSyncRepo, aikbService, clientId, emailConnectionRow, accessToken, rules, syncRunId, excludeMessageIds = new Set() }) {
   try {
-    const previouslyIngested = await emailSyncRepo.getPreviouslyIngestedMessageIds(emailConnectionRow.id);
+    const previouslyIngested = await emailSyncRepo.getPreviouslyIngestedMessageIds(emailConnectionRow);
     if (previouslyIngested.length === 0) return [];
     // A message the label-removal pass (reconcileRemovedLabelsFullList)
     // already tombstoned this same sync is skipped here — both passes
