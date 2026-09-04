@@ -9,6 +9,7 @@
 const config = require('../config');
 
 const EMPTY_QUESTION_REPLY = 'Please include a question after mentioning me.';
+const TOO_LONG_QUESTION_REPLY = 'That question is too long — please shorten it and ask again.';
 
 /**
  * Builds a regex matching the bot's own <@BOT_ID> or <@BOT_ID|label> mention
@@ -52,4 +53,5 @@ function extractQuestion(rawText, botUserId, maxLength = config.slack.questionMa
 module.exports = {
   extractQuestion,
   EMPTY_QUESTION_REPLY,
+  TOO_LONG_QUESTION_REPLY,
 };

@@ -17,7 +17,7 @@ const defaultSlackDeliveryService = require('./slackDeliveryService');
 const defaultAikbAskClient = require('./aikbAskClient');
 const defaultSlackCollectionAccessService = require('./slackCollectionAccessService');
 const defaultSlackDeliveryFailureService = require('./slackDeliveryFailureService');
-const { extractQuestion, EMPTY_QUESTION_REPLY } = require('./slackQuestionService');
+const { extractQuestion, EMPTY_QUESTION_REPLY, TOO_LONG_QUESTION_REPLY } = require('./slackQuestionService');
 const { FALLBACK } = require('./slackAnswerFormatter');
 const { retryWithBackoff } = require('./retryWithBackoff');
 const config = require('../config');
@@ -37,6 +37,7 @@ const OUTCOME = Object.freeze({
   UNKNOWN_WORKSPACE: 'unknown_workspace',
   INACTIVE_ORG: 'inactive_org',
   EMPTY_QUESTION: 'empty_question',
+  QUESTION_TOO_LONG: 'question_too_long',
   ENQUEUED: 'enqueued',
   ASK_FAILED: 'ask_failed',
 });
@@ -164,11 +165,14 @@ function createSlackEventsService({
     }
 
     if (!extraction.ok) {
+      const isTooLong = extraction.reason === 'too_long';
       await replyDirectly({
-        connection, channel: event.channel, threadTs, text: EMPTY_QUESTION_REPLY, row,
+        connection, channel: event.channel, threadTs,
+        text: isTooLong ? TOO_LONG_QUESTION_REPLY : EMPTY_QUESTION_REPLY,
+        row,
         slackEventLogService, slackDeliveryService, oauthConnectionsService, slackDeliveryFailureService, sleep,
       });
-      return { status: 200, outcome: OUTCOME.EMPTY_QUESTION };
+      return { status: 200, outcome: isTooLong ? OUTCOME.QUESTION_TOO_LONG : OUTCOME.EMPTY_QUESTION };
     }
 
     // EL7C (LIVE_EMAIL_LOOKUP.md) — Slack never resolves a requesting

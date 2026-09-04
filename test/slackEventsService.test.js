@@ -389,6 +389,26 @@ test('an empty mention (no question) never calls AIKB and replies directly with 
   assert.equal(slackDeliveryService.calls[0].text, 'Please include a question after mentioning me.');
 });
 
+test('an over-length question never calls AIKB and replies with the too-long fallback, not the empty-question one', async () => {
+  const aikbAskClient = createFakeAikbAskClient();
+  const slackDeliveryService = createFakeSlackDeliveryService();
+  const service = createSlackEventsService({ sleep: NO_OP_SLEEP,
+    slackEventLogService: createFakeSlackEventLog(),
+    aikbAskClient,
+    oauthConnectionsService: createFakeOauthConnectionsService(),
+    supabaseService: createFakeSupabaseService(),
+    slackDeliveryService,
+    slackCollectionAccessService: createFakeSlackCollectionAccessService(),
+  });
+
+  const overLongText = `<@${BOT_USER_ID}> ${'a'.repeat(2001)}`;
+  const result = await service.processEventCallback(baseEventCallback({ event: { text: overLongText } }));
+  assert.equal(result.outcome, OUTCOME.QUESTION_TOO_LONG);
+  assert.equal(aikbAskClient.calls.length, 0);
+  assert.equal(slackDeliveryService.calls.length, 1);
+  assert.equal(slackDeliveryService.calls[0].text, 'That question is too long — please shorten it and ask again.');
+});
+
 test('url_verification returns the exact challenge value', () => {
   const service = createSlackEventsService({ sleep: NO_OP_SLEEP,
     slackEventLogService: createFakeSlackEventLog(),
