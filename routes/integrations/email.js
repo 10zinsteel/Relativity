@@ -278,7 +278,7 @@ router.post('/connections/:id/preview', clientAuth, async (req, res) => {
  * always echoes the `runType` a caller must pass back, since a resumed page
  * needs to know whether to continue a full re-scan or a history-diff read).
  * Returns a `{syncRunId, runType, status, complete, nextPageToken,
- * imported, skipped, failed, reconciled, errorSummary}` summary — the same
+ * imported, skipped, failed, reconciled, restored, errorSummary}` summary — the same
  * structured-summary UX pattern already proven for ZIP import (§27).
  */
 router.post('/connections/:id/sync', clientAuth, async (req, res) => {

@@ -74,6 +74,38 @@ function syncError(code, message) {
 // a real Supabase project.
 const defaultDbClient = createClient(supabaseConfig.url, supabaseConfig.serviceKey);
 
+// Shared by getPreviouslyIngestedMessageIds and
+// getTombstonedPolicyChangeMessageIds — every email_connections.id that has
+// ever shared this row's durable mailbox identity (client + member +
+// provider + mailbox address), so a reconnect (which allocates a new
+// connection id, per Scenario 6) doesn't orphan either lookup from a
+// mailbox's ingestion history.
+async function resolveMailboxConnectionIds(emailConnectionRow) {
+  const { data: relatedConnections, error: relError } = await defaultDbClient
+    .from('email_connections')
+    .select('id')
+    .eq('client_id', emailConnectionRow.client_id)
+    .eq('member_id', emailConnectionRow.member_id)
+    .eq('provider', emailConnectionRow.provider)
+    .eq('mailbox_address', emailConnectionRow.mailbox_address);
+  if (relError) throw new Error(`resolveMailboxConnectionIds failed: ${relError.message}`);
+  return (relatedConnections || []).map((row) => row.id);
+}
+
+// Pure reduction used by getTombstonedPolicyChangeMessageIds: given every
+// email_ingestion_events row for a mailbox's message ids, in ascending
+// created_at order, returns a Map of provider_message_id -> its most recent
+// outcome. Extracted standalone so this "latest, not any" logic (the actual
+// fix for messages otherwise being permanently invisible after a restore)
+// is directly unit-testable without a live Supabase query.
+function reduceToLatestOutcomePerMessage(eventsAscending) {
+  const latest = new Map();
+  for (const row of eventsAscending) {
+    latest.set(row.provider_message_id, row.outcome);
+  }
+  return latest;
+}
+
 const defaultEmailSyncRepo = {
   async createSyncRun({ clientId, emailConnectionId, runType, triggeredByMemberId }) {
     const { data, error } = await defaultDbClient
@@ -189,15 +221,7 @@ const defaultEmailSyncRepo = {
   // instead by the durable mailbox identity (client + member + provider +
   // address), across every connection row that identity has ever had.
   async getPreviouslyIngestedMessageIds(emailConnectionRow) {
-    const { data: relatedConnections, error: relError } = await defaultDbClient
-      .from('email_connections')
-      .select('id')
-      .eq('client_id', emailConnectionRow.client_id)
-      .eq('member_id', emailConnectionRow.member_id)
-      .eq('provider', emailConnectionRow.provider)
-      .eq('mailbox_address', emailConnectionRow.mailbox_address);
-    if (relError) throw new Error(`getPreviouslyIngestedMessageIds (connection lookup) failed: ${relError.message}`);
-    const connectionIds = (relatedConnections || []).map((row) => row.id);
+    const connectionIds = await resolveMailboxConnectionIds(emailConnectionRow);
     if (connectionIds.length === 0) return [];
 
     const { data, error } = await defaultDbClient
@@ -207,6 +231,32 @@ const defaultEmailSyncRepo = {
       .eq('outcome', 'ingested');
     if (error) throw new Error(`getPreviouslyIngestedMessageIds failed: ${error.message}`);
     return Array.from(new Set((data || []).map((row) => row.provider_message_id)));
+  },
+
+  // Restore-path counterpart (fix for: policy-tombstoned messages had no
+  // way back once the policy that tombstoned them was later reverted —
+  // see reconcilePolicyRestorations' doc comment). Unlike
+  // getPreviouslyIngestedMessageIds above, this can't just filter
+  // `.eq('outcome', 'tombstoned_policy_change')`: a message's original
+  // 'ingested' event row is never removed, so outcome history accumulates
+  // (ingested -> tombstoned_policy_change -> restored_policy_change -> ...)
+  // and only the LATEST row per message tells you its current state.
+  // Scoped by the same durable mailbox identity as
+  // getPreviouslyIngestedMessageIds, for the same reconnect reason.
+  async getTombstonedPolicyChangeMessageIds(emailConnectionRow) {
+    const connectionIds = await resolveMailboxConnectionIds(emailConnectionRow);
+    if (connectionIds.length === 0) return [];
+
+    const { data, error } = await defaultDbClient
+      .from('email_ingestion_events')
+      .select('provider_message_id, outcome')
+      .in('email_connection_id', connectionIds)
+      .order('created_at', { ascending: true });
+    if (error) throw new Error(`getTombstonedPolicyChangeMessageIds failed: ${error.message}`);
+
+    return Array.from(reduceToLatestOutcomePerMessage(data || []).entries())
+      .filter(([, outcome]) => outcome === 'tombstoned_policy_change')
+      .map(([messageId]) => messageId);
   },
 
   // EM7 — recent sync-run history for the portal's sync-run view (§27, §31 EM7 Frontend).
@@ -251,6 +301,42 @@ async function countActiveDocuments(aikbService, clientId) {
   } catch {
     return 0; // non-blocking — matches routes/api.js's existing "proceed if count check fails" precedent
   }
+}
+
+/**
+ * The aikbService.uploadAndIngest payload for one Gmail message — shared by
+ * processCandidateMessage (new/re-scanned messages) and
+ * reconcilePolicyRestorations (re-ingesting a policy-tombstoned message),
+ * so the two can't drift apart on what AIKB expects.
+ */
+function buildEmailIngestPayload({ clientId, emailConnectionRow, messageId, meta, normalized, labelsOrFolders, matchedRuleId, destinationCollectionId }) {
+  return {
+    clientId,
+    sourceFileId: messageId,
+    fileName: `${(meta.subject || '(no subject)').slice(0, 200)}.txt`,
+    mimeType: 'text/plain',
+    fileBuffer: Buffer.from(normalized, 'utf8'),
+    sourceProvider: 'gmail',
+    collectionId: destinationCollectionId || undefined,
+    emailMetadata: {
+      provider: 'gmail',
+      providerAccountId: emailConnectionRow.mailbox_address,
+      contributingMemberId: emailConnectionRow.member_id,
+      providerMessageId: messageId,
+      providerThreadId: meta.threadId || null,
+      from: meta.fromAddress,
+      fromName: null,
+      to: [],
+      cc: [],
+      subject: meta.subject,
+      sentAt: meta.date ? safeIsoDate(meta.date) : null,
+      receivedAt: null,
+      folderOrLabels: labelsOrFolders,
+      hasAttachments: false,
+      deepLinkUrl: `https://mail.google.com/mail/u/0/#all/${messageId}`,
+      ingestionRuleId: matchedRuleId,
+    },
+  };
 }
 
 /**
@@ -320,33 +406,10 @@ async function processCandidateMessage({
   const matchedRule = (rules || []).find((r) => r.id === decision.matchedRuleId);
   const destinationCollectionId = matchedRule ? matchedRule.destinationCollectionId : null;
 
-  await aikbService.uploadAndIngest({
-    clientId,
-    sourceFileId: messageId,
-    fileName: `${(meta.subject || '(no subject)').slice(0, 200)}.txt`,
-    mimeType: 'text/plain',
-    fileBuffer: Buffer.from(normalized, 'utf8'),
-    sourceProvider: 'gmail',
-    collectionId: destinationCollectionId || undefined,
-    emailMetadata: {
-      provider: 'gmail',
-      providerAccountId: emailConnectionRow.mailbox_address,
-      contributingMemberId: emailConnectionRow.member_id,
-      providerMessageId: messageId,
-      providerThreadId: meta.threadId || null,
-      from: meta.fromAddress,
-      fromName: null,
-      to: [],
-      cc: [],
-      subject: meta.subject,
-      sentAt: meta.date ? safeIsoDate(meta.date) : null,
-      receivedAt: null,
-      folderOrLabels: labelsOrFolders,
-      hasAttachments: false,
-      deepLinkUrl: `https://mail.google.com/mail/u/0/#all/${messageId}`,
-      ingestionRuleId: decision.matchedRuleId,
-    },
-  });
+  await aikbService.uploadAndIngest(buildEmailIngestPayload({
+    clientId, emailConnectionRow, messageId, meta, normalized, labelsOrFolders,
+    matchedRuleId: decision.matchedRuleId, destinationCollectionId,
+  }));
 
   return {
     kind: 'ingested',
@@ -568,6 +631,101 @@ async function reconcilePolicyChanges({ gmailService, emailPolicyService, emailS
     });
   } catch (err) {
     console.error('[emailSyncService] policy-change reconciliation failed (non-fatal):', err.message);
+    return [];
+  }
+}
+
+/**
+ * Restore-path counterpart to reconcilePolicyChanges above — fixes a gap
+ * where a message tombstoned by an org policy edit could never come back
+ * even after a LATER policy edit made it match again. reconcilePolicyChanges
+ * only ever walks forward (ingested -> tombstoned); nothing previously
+ * walked backward. Restoring isn't a cheap status flip: tombstoning hard-
+ * deletes the message's indexed chunks and its uploaded file, so "restore"
+ * means re-running the exact same body-fetch -> normalize -> ingest pipeline
+ * processCandidateMessage uses for a brand-new message, just re-invoked for
+ * a specific previously-tombstoned messageId (AIKB's ingest already handles
+ * re-ingesting an existing document id correctly — proven in
+ * EM10_5_STAGING_CHECKLIST.md Bugs 7/8/9).
+ *
+ * Candidates come from getTombstonedPolicyChangeMessageIds (latest event
+ * outcome == 'tombstoned_policy_change' — see its own doc comment for why
+ * that has to be a "latest," not "any," check). Bounded by the same
+ * POLICY_RECONCILIATION_LIST_SIZE cap reconcilePolicyChanges uses, for the
+ * same reason (one Gmail metadata re-fetch per candidate, no cheaper bulk
+ * check exists). Best-effort and non-fatal, same as reconcilePolicyChanges:
+ * a re-fetch/normalize/ingest failure for one message is skipped, not
+ * retried in this same pass, and never fails the sync run that triggered it
+ * — a later sync gets another chance.
+ */
+async function reconcilePolicyRestorations({ gmailService, emailPolicyService, emailNormalizationService, emailSyncRepo, aikbService, clientId, emailConnectionRow, accessToken, rules, syncRunId, excludeMessageIds = new Set() }) {
+  try {
+    const tombstonedByPolicy = await emailSyncRepo.getTombstonedPolicyChangeMessageIds(emailConnectionRow);
+    if (tombstonedByPolicy.length === 0) return [];
+
+    const candidates = tombstonedByPolicy
+      .filter((messageId) => !excludeMessageIds.has(messageId))
+      .slice(0, POLICY_RECONCILIATION_LIST_SIZE);
+    if (candidates.length === 0) return [];
+
+    const labels = await gmailService.listLabels(accessToken);
+    const labelNameById = new Map(labels.map((l) => [l.id, l.name]));
+
+    const restored = [];
+    const events = [];
+    for (const messageId of candidates) {
+      let meta;
+      try {
+        meta = await gmailService.getMessageMetadata({ accessToken, messageId });
+      } catch (err) {
+        continue; // gone / transient failure — leave it tombstoned, a future pass retries
+      }
+
+      const hasLabel = Boolean(emailConnectionRow.managed_label_id) && meta.labelIds.includes(emailConnectionRow.managed_label_id);
+      const labelsOrFolders = meta.labelIds.map((id) => labelNameById.get(id)).filter(Boolean);
+      const message = {
+        provider: 'gmail',
+        fromAddress: meta.fromAddress,
+        toAddresses: [],
+        ccAddresses: [],
+        subject: meta.subject,
+        isSent: meta.isSent,
+        labelsOrFolders,
+      };
+
+      const decision = emailPolicyService.evaluateMessageAgainstPolicy({ rules, message, hasLabel });
+      if (!decision.eligible) continue; // still doesn't match — stays tombstoned
+
+      try {
+        const body = await gmailService.getMessageBody({ accessToken, messageId });
+        const normalized = emailNormalizationService.normalizeEmailBody({ html: body.html, text: body.text });
+        if (!normalized) continue; // no extractable text — stays tombstoned, a future pass retries
+
+        const matchedRule = (rules || []).find((r) => r.id === decision.matchedRuleId);
+        const destinationCollectionId = matchedRule ? matchedRule.destinationCollectionId : null;
+
+        await aikbService.uploadAndIngest(buildEmailIngestPayload({
+          clientId, emailConnectionRow, messageId, meta, normalized, labelsOrFolders,
+          matchedRuleId: decision.matchedRuleId, destinationCollectionId,
+        }));
+
+        restored.push({ messageId, subject: meta.subject });
+        events.push({
+          sync_run_id: syncRunId,
+          email_connection_id: emailConnectionRow.id,
+          provider_message_id: messageId,
+          outcome: 'restored_policy_change',
+          matched_rule_id: decision.matchedRuleId,
+          reason: 'Now matches organization policy again.',
+        });
+      } catch (err) {
+        console.error('[emailSyncService] policy restoration ingest failed:', messageId, err.message);
+      }
+    }
+    if (events.length > 0) await emailSyncRepo.recordEvents(events);
+    return restored;
+  } catch (err) {
+    console.error('[emailSyncService] policy restoration reconciliation failed (non-fatal):', err.message);
     return [];
   }
 }
@@ -879,6 +1037,7 @@ function createEmailSyncService({
     // pageOutcome.reconciled is always [] (its reconciliation is the
     // extraReconciled branch above), so this is a no-op there — the gap was
     // incremental-only.
+    let restored = [];
     if (complete && runStatus !== 'failed') {
       const alreadyReconciledIds = new Set([
         ...pageOutcome.reconciled.map((r) => r.messageId),
@@ -891,6 +1050,15 @@ function createEmailSyncService({
           excludeMessageIds: alreadyReconciledIds,
         })),
       ];
+      // Restore-path counterpart, run right alongside policy-change
+      // tombstoning above — same gating (both sync modes, both run types),
+      // since a policy revert needs to be caught regardless of which run
+      // type happened to execute it. See reconcilePolicyRestorations' own
+      // doc comment for why this direction was previously entirely missing.
+      restored = await reconcilePolicyRestorations({
+        gmailService, emailPolicyService, emailNormalizationService, emailSyncRepo, aikbService, clientId, emailConnectionRow, accessToken, rules, syncRunId: syncRun.id,
+        excludeMessageIds: alreadyReconciledIds,
+      });
     }
     const reconciled = [...pageOutcome.reconciled, ...extraReconciled];
 
@@ -939,6 +1107,7 @@ function createEmailSyncService({
       skipped: pageOutcome.skipped,
       failed: pageOutcome.failed,
       reconciled,
+      restored,
       errorSummary,
     };
   }
@@ -970,4 +1139,5 @@ module.exports = {
   HISTORICAL_PAGE_SIZE,
   RECONCILIATION_LIST_SIZE,
   POLICY_RECONCILIATION_LIST_SIZE,
+  reduceToLatestOutcomePerMessage,
 };

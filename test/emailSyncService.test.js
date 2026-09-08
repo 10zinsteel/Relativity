@@ -7,6 +7,7 @@ const {
   assertSyncAllowed,
   ERROR_CODES,
   HISTORICAL_PAGE_SIZE,
+  reduceToLatestOutcomePerMessage,
 } = require('../services/emailSyncService');
 const { compileSearchQuery, ERROR_CODES: GMAIL_ERROR_CODES } = require('../services/gmailService');
 const { evaluateMessageAgainstPolicy } = require('../services/emailPolicyService');
@@ -130,7 +131,7 @@ function fixtureAikbService({ documents = [], failIngestFor = new Set(), calls =
 }
 
 function fixtureEmailSyncRepo({
-  previouslyIngested = [], initialSyncState = null,
+  previouslyIngested = [], tombstonedByPolicy = [], initialSyncState = null,
 } = {}) {
   const runs = new Map();
   const events = [];
@@ -178,6 +179,7 @@ function fixtureEmailSyncRepo({
       syncState = { ...(syncState || { email_connection_id: emailConnectionId }), cursor_status: 'expired' };
     },
     getPreviouslyIngestedMessageIds: async () => previouslyIngested,
+    getTombstonedPolicyChangeMessageIds: async () => tombstonedByPolicy,
     listRecentSyncRuns: async (emailConnectionId, limit = 10) => {
       return Array.from(runs.values())
         .filter((r) => r.emailConnectionId === emailConnectionId)
@@ -187,10 +189,10 @@ function fixtureEmailSyncRepo({
 }
 
 function makeService({
-  pages, rules, labels, gmailCalls, bodies, documents, failIngestFor, aikbCalls, previouslyIngested, maxDocuments,
+  pages, rules, labels, gmailCalls, bodies, documents, failIngestFor, aikbCalls, previouslyIngested, tombstonedByPolicy, maxDocuments,
   historyPages, mailboxHistoryId, initialSyncState, extraMessages,
 } = {}) {
-  const emailSyncRepo = fixtureEmailSyncRepo({ previouslyIngested, initialSyncState });
+  const emailSyncRepo = fixtureEmailSyncRepo({ previouslyIngested, tombstonedByPolicy, initialSyncState });
   const gmailService = fixtureGmailService({ pages, labels, bodies, calls: gmailCalls || {}, historyPages, mailboxHistoryId, extraMessages });
   const aikbService = fixtureAikbService({ documents, failIngestFor, calls: aikbCalls || {} });
   const service = createEmailSyncService({
@@ -656,6 +658,128 @@ test('policy-change reconciliation: a re-fetch failure for one candidate is skip
   const result = await service.syncConnection({ clientId: 'client-a', emailConnectionRow: fixtureConnection(), memberSearchEnabled: true, accessToken: 't' });
   assert.equal(result.status, 'completed');
   assert.equal(result.reconciled.length, 0);
+});
+
+// ─────────────────────────────────────────────
+// Policy restoration — fix for: a message tombstoned by an org policy edit
+// previously had no way back once a LATER policy edit made it match again
+// (reconcilePolicyChanges only ever walked forward). Restoring re-runs the
+// same body-fetch -> normalize -> ingest pipeline used for a brand-new
+// message, recorded as 'restored_policy_change'.
+// ─────────────────────────────────────────────
+
+test('policy restoration: a tombstoned message that matches policy again is re-ingested as restored_policy_change', async () => {
+  const pages = [
+    { messages: [], nextPageToken: null },
+    { messages: [{ id: 'restored-msg' }], nextPageToken: null }, // still labeled — label-removal pass leaves it alone
+  ];
+  const extraMessages = [{
+    id: 'restored-msg', subject: 'Finance update', fromAddress: 'finance@client.com',
+    labelIds: [MANAGED_LABEL_ID, 'Label_finance'],
+  }];
+  const bodies = { 'restored-msg': { html: '<p>Q3 numbers attached.</p>' } };
+  const aikbCalls = {};
+  const { service, emailSyncRepo } = makeService({
+    pages, rules: [ALLOW_FINANCE], tombstonedByPolicy: ['restored-msg'], extraMessages, bodies, aikbCalls,
+  });
+
+  const result = await service.syncConnection({ clientId: 'client-a', emailConnectionRow: fixtureConnection(), memberSearchEnabled: true, accessToken: 't' });
+
+  assert.equal(result.restored.length, 1);
+  assert.equal(result.restored[0].messageId, 'restored-msg');
+  assert.equal(aikbCalls.uploadAndIngest.length, 1);
+  assert.equal(aikbCalls.uploadAndIngest[0].sourceFileId, 'restored-msg');
+  assert.equal(aikbCalls.uploadAndIngest[0].sourceProvider, 'gmail');
+  const event = emailSyncRepo._events.find((e) => e.provider_message_id === 'restored-msg');
+  assert.equal(event.outcome, 'restored_policy_change');
+  assert.equal(event.matched_rule_id, 'rule-1');
+});
+
+test('policy restoration: a tombstoned message still not matching policy is left alone', async () => {
+  const pages = [
+    { messages: [], nextPageToken: null },
+    { messages: [{ id: 'still-denied' }], nextPageToken: null },
+  ];
+  const extraMessages = [{
+    id: 'still-denied', subject: 'Payroll run', fromAddress: 'hr@client.com',
+    labelIds: [MANAGED_LABEL_ID, 'Label_finance', 'Label_payroll'],
+  }];
+  const { service, emailSyncRepo } = makeService({
+    pages, rules: [ALLOW_FINANCE, DENY_PAYROLL], tombstonedByPolicy: ['still-denied'], extraMessages,
+  });
+
+  const result = await service.syncConnection({ clientId: 'client-a', emailConnectionRow: fixtureConnection(), memberSearchEnabled: true, accessToken: 't' });
+
+  assert.equal(result.restored.length, 0);
+  assert.equal(emailSyncRepo._events.find((e) => e.provider_message_id === 'still-denied'), undefined);
+});
+
+test('policy restoration: a tombstoned message no longer resolvable at the provider is skipped, stays tombstoned', async () => {
+  const gmailService = {
+    compileSearchQuery,
+    listMessageIdsByQuery: async () => ({ messageIds: [], nextPageToken: null }),
+    listLabels: async () => LABELS,
+    getMessageMetadata: async () => { throw new Error('simulated: message deleted at provider'); },
+    getMessageBody: async () => { throw new Error('not used in this test'); },
+    getMailboxHistoryId: async () => ({ historyId: DEFAULT_FIXTURE_HISTORY_ID }),
+    listHistory: async () => { throw new Error('not used in this test'); },
+  };
+  const emailSyncRepo = fixtureEmailSyncRepo({ tombstonedByPolicy: ['gone-msg'] });
+  const aikbService = fixtureAikbService({});
+  const service = createEmailSyncService({
+    gmailService,
+    emailPolicyService: fixtureEmailPolicyService([ALLOW_FINANCE]),
+    emailNormalizationService: { normalizeEmailBody },
+    aikbService,
+    emailSyncRepo,
+    maxDocuments: 50,
+  });
+
+  const result = await service.syncConnection({ clientId: 'client-a', emailConnectionRow: fixtureConnection(), memberSearchEnabled: true, accessToken: 't' });
+
+  assert.equal(result.status, 'completed');
+  assert.equal(result.restored.length, 0);
+  assert.equal(emailSyncRepo._events.find((e) => e.provider_message_id === 'gone-msg'), undefined);
+});
+
+test('policy restoration: a tombstoned message that normalizes to empty content is skipped, stays tombstoned', async () => {
+  const pages = [
+    { messages: [], nextPageToken: null },
+    { messages: [{ id: 'empty-msg' }], nextPageToken: null },
+  ];
+  const extraMessages = [{
+    id: 'empty-msg', subject: 'Blank', fromAddress: 'finance@client.com',
+    labelIds: [MANAGED_LABEL_ID, 'Label_finance'],
+  }];
+  const bodies = { 'empty-msg': { html: '<img src="x"><script>void(0)</script>' } };
+  const { service, emailSyncRepo } = makeService({
+    pages, rules: [ALLOW_FINANCE], tombstonedByPolicy: ['empty-msg'], extraMessages, bodies,
+  });
+
+  const result = await service.syncConnection({ clientId: 'client-a', emailConnectionRow: fixtureConnection(), memberSearchEnabled: true, accessToken: 't' });
+
+  assert.equal(result.restored.length, 0);
+  assert.equal(emailSyncRepo._events.find((e) => e.provider_message_id === 'empty-msg'), undefined);
+});
+
+// The DB-facing half of the fix: getTombstonedPolicyChangeMessageIds can't
+// treat "any row with outcome=tombstoned_policy_change" as the candidate
+// set, because a message's original 'ingested' row is never removed and
+// outcome history only accumulates. reduceToLatestOutcomePerMessage is the
+// extracted pure reduction that makes "latest, not any" correct — verified
+// directly here since the fixture-based tests above never exercise the real
+// (Supabase-backed) repo implementation.
+test('reduceToLatestOutcomePerMessage: a message restored after being tombstoned resolves to its LATEST outcome, not its first', () => {
+  const eventsAscending = [
+    { provider_message_id: 'm1', outcome: 'ingested', created_at: '2026-08-01T00:00:00Z' },
+    { provider_message_id: 'm1', outcome: 'tombstoned_policy_change', created_at: '2026-08-02T00:00:00Z' },
+    { provider_message_id: 'm1', outcome: 'restored_policy_change', created_at: '2026-08-03T00:00:00Z' },
+    { provider_message_id: 'm2', outcome: 'ingested', created_at: '2026-08-01T00:00:00Z' },
+    { provider_message_id: 'm2', outcome: 'tombstoned_policy_change', created_at: '2026-08-02T00:00:00Z' },
+  ];
+  const latest = reduceToLatestOutcomePerMessage(eventsAscending);
+  assert.equal(latest.get('m1'), 'restored_policy_change');
+  assert.equal(latest.get('m2'), 'tombstoned_policy_change');
 });
 
 // ─────────────────────────────────────────────
