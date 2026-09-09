@@ -257,6 +257,21 @@
   margin: 16px 0 8px;
 }
 
+/* EM10.5 Bug 11 — admin-override disconnect control on the email connections panel. */
+.email-disconnect-cell {
+  white-space: nowrap;
+}
+
+.email-disconnect-cleanup-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  margin-right: 8px;
+  cursor: pointer;
+}
+
 /* EM9 (EMAIL_INGESTION.md §24.5, §27) — an offboarded member's email
    connection that was never actually disconnected (stillConnectedAfterOffboarding). */
 .row--flagged td {

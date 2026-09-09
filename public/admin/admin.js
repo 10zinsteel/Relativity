@@ -272,7 +272,26 @@
       return `<span class="badge ${cls}">${esc(status || 'unknown')}</span>`;
     };
 
-    const rows = connections.map(conn => `
+    // EM10.5 Bug 11 fix — this panel was read-only: it listed connections
+    // but wired no disconnect action into any row, even though
+    // emailConnectionService.disconnect already fully implements the
+    // owner/admin-override-plus-cleanup path (§14.1, §24). This is the
+    // control for exactly the case the self-service portal button can't
+    // reach — e.g. stillConnectedAfterOffboarding above, a mailbox left
+    // connected after its member was offboarded.
+    const rows = connections.map(conn => {
+      const isActive = conn.oauth_status === 'active';
+      const disconnectCell = isActive
+        ? `<label class="slack-collection-option email-disconnect-cleanup-option">
+             <input type="checkbox" class="email-disconnect-cleanup-toggle" />
+             cleanup
+           </label>
+           <button type="button" class="btn-delete btn-email-disconnect"
+             data-client-id="${esc(conn.client_id)}"
+             data-connection-id="${esc(conn.oauth_connection_id)}"
+             data-mailbox="${esc(conn.mailbox_address)}">Disconnect</button>`
+        : '—';
+      return `
       <tr class="${conn.stillConnectedAfterOffboarding ? 'row--flagged' : ''}">
         <td class="client-email">${esc(conn.mailbox_address)}</td>
         <td class="client-email">${esc(conn.member_email || '—')}</td>
@@ -283,8 +302,10 @@
         <td>${conn.stillConnectedAfterOffboarding
           ? '<span class="badge badge--pending">Still connected — offboarded</span>'
           : ''}</td>
+        <td class="email-disconnect-cell">${disconnectCell}</td>
       </tr>
-    `).join('');
+    `;
+    }).join('');
 
     return `
       <div class="members-panel">
@@ -298,6 +319,7 @@
               <th>Sync mode</th>
               <th>Sync enabled</th>
               <th>OAuth status</th>
+              <th></th>
               <th></th>
             </tr>
           </thead>
@@ -373,6 +395,50 @@
       } catch {
         deleteBtn.disabled = false;
         deleteBtn.textContent = 'Delete';
+      }
+      return;
+    }
+
+    // EM10.5 Bug 11 fix — admin-override disconnect (with optional cleanup)
+    // for a single client's email connection row.
+    const emailDisconnectBtn = e.target.closest('.btn-email-disconnect');
+    if (emailDisconnectBtn) {
+      const clientId = emailDisconnectBtn.dataset.clientId;
+      const connectionId = emailDisconnectBtn.dataset.connectionId;
+      const mailbox = emailDisconnectBtn.dataset.mailbox;
+      const cleanupToggle = emailDisconnectBtn.closest('td').querySelector('.email-disconnect-cleanup-toggle');
+      const cleanupIngestedContent = !!(cleanupToggle && cleanupToggle.checked);
+      const confirmMessage = cleanupIngestedContent
+        ? `Disconnect ${mailbox} and delete the knowledge base content it contributed? This cannot be undone.`
+        : `Disconnect ${mailbox}? Content already in the knowledge base will be kept.`;
+      if (!confirm(confirmMessage)) return;
+
+      emailDisconnectBtn.disabled = true;
+      emailDisconnectBtn.textContent = 'Disconnecting…';
+      try {
+        const res = await adminFetch(`/admin/clients/${clientId}/email-connections/${connectionId}/disconnect`, {
+          method: 'POST',
+          body: JSON.stringify({ cleanupIngestedContent }),
+        });
+        const body = await res.json().catch(() => ({}));
+        if (res.ok) {
+          const panel = document.getElementById(`email-connections-${clientId}`);
+          if (panel) {
+            panel.dataset.loaded = 'false';
+            const refreshed = await adminFetch(`/admin/clients/${clientId}/email-connections`);
+            const refreshedBody = await refreshed.json();
+            panel.innerHTML = renderEmailConnectionsPanel(refreshedBody.connections || []);
+            panel.dataset.loaded = 'true';
+          }
+        } else {
+          alert(body.error || 'Failed to disconnect.');
+          emailDisconnectBtn.disabled = false;
+          emailDisconnectBtn.textContent = 'Disconnect';
+        }
+      } catch {
+        alert('Network error. Please try again.');
+        emailDisconnectBtn.disabled = false;
+        emailDisconnectBtn.textContent = 'Disconnect';
       }
       return;
     }

@@ -150,6 +150,17 @@
                     </div>
                   </div>
 
+                  <!-- EM9/EM10.5 Bug 11 — disconnect-with-cleanup (§24, §14.1) has always
+                       been fully implemented server-side, but no UI ever sent
+                       cleanupIngestedContent:true. Shown/hidden alongside the disconnect
+                       button itself. -->
+                  <div id="gmail-disconnect-cleanup-row" class="email-mailbox-settings-section" hidden>
+                    <label class="slack-collection-option">
+                      <input type="checkbox" id="gmail-disconnect-cleanup-toggle" />
+                      Also delete the knowledge base content I've contributed from this mailbox
+                    </label>
+                  </div>
+
                   <!-- EM4 — member mailbox settings (§7, §13.1, §31): own search-contribution
                        toggle. Shown only while connected. (This section also used to render
                        a sync-mode selector — a choice between manual_selected and automatic —

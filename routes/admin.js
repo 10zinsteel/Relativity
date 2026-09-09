@@ -8,6 +8,7 @@ const adminAuth = require('../middleware/adminAuth');
 const { adminLoginLimiter } = require('../middleware/rateLimiters');
 const supabaseService = require('../services/supabaseService');
 const aikbService = require('../services/aikbService');
+const emailConnectionService = require('../services/emailConnectionService');
 
 if (process.env.NODE_ENV !== 'production') {
   console.log('[aibdr] AI_BDR_API_URL exists:', Boolean(process.env.AI_BDR_API_URL));
@@ -164,6 +165,29 @@ router.get('/clients/:clientId/email-connections', adminAuth, async (req, res) =
     res.json({ connections });
   } catch (err) {
     console.error('admin/clients/:clientId/email-connections error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// EM10.5 Bug 11 fix — the override half of §14.1's route table
+// (emailConnectionService.disconnect already fully implements owner/admin
+// override + cleanupIngestedContent; this is simply the first UI ever wired
+// to it, for the case the self-service portal button can't reach: an
+// offboarded/unreachable member's mailbox left connected — see
+// stillConnectedAfterOffboarding above). connectionId here is the
+// oauth_connections id (getEmailConnectionsForClient's oauth_connection_id
+// field), same identity emailConnectionService.disconnect already expects.
+router.post('/clients/:clientId/email-connections/:connectionId/disconnect', adminAuth, async (req, res) => {
+  try {
+    const { cleanupIngestedContent } = req.body || {};
+    const result = await emailConnectionService.disconnect({
+      clientId: req.params.clientId,
+      connectionId: req.params.connectionId,
+      cleanupIngestedContent: cleanupIngestedContent === true,
+    });
+    res.json(result);
+  } catch (err) {
+    console.error('admin/clients/:clientId/email-connections/:connectionId/disconnect error:', err.message);
     res.status(500).json({ error: err.message });
   }
 });

@@ -339,6 +339,8 @@
   const gmailMailboxAddress = document.getElementById('gmail-mailbox-address');
   const gmailConnectBtn     = document.getElementById('gmail-connect-btn');
   const gmailDisconnectBtn  = document.getElementById('gmail-disconnect-btn');
+  const gmailDisconnectCleanupRow    = document.getElementById('gmail-disconnect-cleanup-row');
+  const gmailDisconnectCleanupToggle = document.getElementById('gmail-disconnect-cleanup-toggle');
   const canConnectGmail     = memberRole !== 'viewer';
 
   // EM4 — member mailbox settings (§7, §13.1, §31): own search-contribution
@@ -375,6 +377,7 @@
       if (gmailMailboxAddress) gmailMailboxAddress.textContent = '';
       if (gmailConnectBtn) gmailConnectBtn.hidden = true;
       if (gmailDisconnectBtn) gmailDisconnectBtn.hidden = true;
+      if (gmailDisconnectCleanupRow) gmailDisconnectCleanupRow.hidden = true;
       if (emailMailboxSettingsSection) emailMailboxSettingsSection.hidden = true;
       if (emailSyncShellSection) emailSyncShellSection.hidden = true;
       return;
@@ -390,6 +393,8 @@
       gmailDisconnectBtn.hidden = !isConnected;
       gmailDisconnectBtn.dataset.connectionId = isConnected ? own.connectionId : '';
     }
+    if (gmailDisconnectCleanupRow) gmailDisconnectCleanupRow.hidden = !isConnected;
+    if (!isConnected && gmailDisconnectCleanupToggle) gmailDisconnectCleanupToggle.checked = false;
 
     if (emailMailboxSettingsSection) emailMailboxSettingsSection.hidden = !isConnected;
 
@@ -441,15 +446,25 @@
     gmailDisconnectBtn.addEventListener('click', async () => {
       const connectionId = gmailDisconnectBtn.dataset.connectionId;
       if (!connectionId) return;
-      if (!confirm('Disconnect your Gmail account?')) return;
+      const cleanupIngestedContent = !!(gmailDisconnectCleanupToggle && gmailDisconnectCleanupToggle.checked);
+      const confirmMessage = cleanupIngestedContent
+        ? 'Disconnect your Gmail account and delete the knowledge base content you\'ve contributed? This cannot be undone.'
+        : 'Disconnect your Gmail account? Content already in the knowledge base will be kept.';
+      if (!confirm(confirmMessage)) return;
       gmailDisconnectBtn.disabled = true;
       try {
         const res = await fetch(`/api/integrations/email/connections/${encodeURIComponent(connectionId)}/disconnect`, {
           method: 'POST',
-          headers: { Authorization: `Bearer ${accessToken}` },
+          headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ cleanupIngestedContent }),
         });
         if (res.ok) {
-          showBanner('success', 'Gmail disconnected.');
+          const body = await res.json().catch(() => ({}));
+          if (body.cleanup) {
+            showBanner('success', `Gmail disconnected. ${body.cleanup.deleted} document${body.cleanup.deleted === 1 ? '' : 's'} deleted${body.cleanup.failed ? `, ${body.cleanup.failed} failed` : ''}.`);
+          } else {
+            showBanner('success', 'Gmail disconnected.');
+          }
         } else {
           const body = await res.json().catch(() => ({}));
           showBanner('error', body.error || 'Could not disconnect Gmail.');
@@ -610,7 +625,18 @@
     emailSyncHistoryList.innerHTML = syncRuns.map((run) => {
       const typeLabel = run.run_type === 'incremental' ? 'Quick check' : 'Full scan';
       const when = run.started_at ? new Date(run.started_at).toLocaleString() : '';
-      const counts = `${run.messages_ingested || 0} imported, ${run.messages_failed || 0} failed`;
+      // EM10.5 Bug 6 fix — reconciliation (tombstoning a message whose label
+      // was removed or that stopped matching org policy, or restoring one
+      // that matches again) previously left this line reading "0 imported,
+      // 0 failed" with no visible sign anything happened, even though real
+      // document deletions/re-ingests occurred. messages_reconciled/
+      // messages_restored are 0 (not undefined) for every run recorded
+      // before this fix, so old rows fall back to the original two-part
+      // summary unchanged.
+      const parts = [`${run.messages_ingested || 0} imported`, `${run.messages_failed || 0} failed`];
+      if (run.messages_reconciled) parts.push(`${run.messages_reconciled} removed`);
+      if (run.messages_restored) parts.push(`${run.messages_restored} restored`);
+      const counts = parts.join(', ');
       return `<li class="email-sync-history-item email-sync-history-item--${escHtml(run.status || 'unknown')}">
         <span class="email-sync-history-type">${escHtml(typeLabel)}</span>
         <span class="email-sync-history-status">${escHtml(run.status || '')}</span>
