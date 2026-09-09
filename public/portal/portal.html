@@ -186,7 +186,13 @@
                       <a id="email-open-gmail-link" class="btn-kb-new-chat" href="https://mail.google.com/mail/u/0/#label/Relativity%2FKnowledge" target="_blank" rel="noopener noreferrer">Open Gmail</a>
                     </div>
                     <div class="email-sync-now-row">
-                      <button type="button" class="btn-kb-new-chat" id="email-sync-now-btn">Sync now</button>
+                      <!-- M17 — visible in-progress feedback on the button itself; previously
+                           the only "Syncing…" text lived in #email-preview-result, which stays
+                           empty until the first page of the sync actually resolves. -->
+                      <button type="button" class="btn-kb-new-chat" id="email-sync-now-btn">
+                        <span id="email-sync-now-btn-label">Sync now</span>
+                        <span class="btn-spinner" id="email-sync-now-spinner" hidden aria-hidden="true"></span>
+                      </button>
                       <span id="email-sync-now-status" class="kb-upload-status" hidden></span>
                     </div>
                     <div id="email-preview-result" class="email-preview-result" hidden></div>

@@ -359,6 +359,8 @@
   const emailSyncShellSection    = document.getElementById('email-sync-shell-section');
   const emailManualInstructions  = document.getElementById('email-manual-instructions');
   const emailSyncNowBtn          = document.getElementById('email-sync-now-btn');
+  const emailSyncNowBtnLabel     = document.getElementById('email-sync-now-btn-label');
+  const emailSyncNowSpinner      = document.getElementById('email-sync-now-spinner');
   const emailSyncNowStatus       = document.getElementById('email-sync-now-status');
   const emailPreviewResult       = document.getElementById('email-preview-result');
 
@@ -572,6 +574,11 @@
     if (!connectionId) return;
     emailSyncTotals = { imported: 0, skipped: 0, failed: 0 };
     emailSyncNowBtn.disabled = true;
+    // M17 — visible in-progress feedback on the button itself, for the
+    // whole (possibly multi-page) sync, not just once the first page
+    // resolves into #email-preview-result below.
+    if (emailSyncNowBtnLabel) emailSyncNowBtnLabel.textContent = 'Syncing…';
+    if (emailSyncNowSpinner) emailSyncNowSpinner.hidden = false;
     if (emailSyncNowStatus) emailSyncNowStatus.hidden = true;
 
     let pageToken = null;
@@ -604,6 +611,8 @@
       }
     } finally {
       emailSyncNowBtn.disabled = false;
+      if (emailSyncNowBtnLabel) emailSyncNowBtnLabel.textContent = 'Sync now';
+      if (emailSyncNowSpinner) emailSyncNowSpinner.hidden = true;
     }
   }
 

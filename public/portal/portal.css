@@ -1116,6 +1116,28 @@ body {
 }
 .btn-kb-new-chat:hover { opacity: 0.85; }
 
+/* M17 — in-progress spinner for buttons that kick off a multi-step/
+   multi-page async action (currently just "Sync now"). currentColor picks
+   up the button's own text color, so it needs no new theme tokens and
+   stays correct in both light and dark mode. */
+.btn-spinner {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  margin-left: 6px;
+  vertical-align: -1px;
+  border: 1.5px solid currentColor;
+  border-top-color: transparent;
+  border-radius: 50%;
+  opacity: 0.85;
+  animation: btn-spinner-spin 0.6s linear infinite;
+}
+.btn-spinner[hidden] { display: none; }
+
+@keyframes btn-spinner-spin {
+  to { transform: rotate(360deg); }
+}
+
 .kb-sessions-list {
   overflow-y: auto;
   max-height: 200px;
