@@ -30,15 +30,15 @@
 
   function initStars() {
     stars = [];
-    var density = 6960;
+    var density = 6000;
     var count = Math.floor((canvas.width * canvas.height) / density);
     for (var i = 0; i < count; i++) {
       stars.push({
         x: Math.random() * canvas.width,
         y: Math.random() * canvas.height,
-        r: Math.random() * 1.1 + 0.1,
-        o: Math.random() * 0.35 + 0.08,
-        speed: Math.random() * 0.15 + 0.03,
+        r: Math.random() * 2 + 0.5,
+        o: Math.random() * 0.5 + 0.15,
+        speed: Math.random() * 0.5 + 0.03,
       });
     }
   }
