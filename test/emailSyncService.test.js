@@ -492,7 +492,7 @@ test('label-removal reconciliation: a previously-ingested message no longer unde
   const pages = [{ messages: [], nextPageToken: null }]; // nothing new this sync
   const documents = [{ id: 'doc-old', source_provider: 'gmail', source_file_id: 'old-msg', status: 'indexed' }];
   const gmailCalls = {};
-  const { service, aikbService: fakeAikb } = makeService({
+  const { service, aikbService: fakeAikb, emailSyncRepo } = makeService({
     pages, rules: [ALLOW_FINANCE], documents, previouslyIngested: ['old-msg'], gmailCalls,
   });
 
@@ -502,6 +502,13 @@ test('label-removal reconciliation: a previously-ingested message no longer unde
   assert.equal(result.reconciled.length, 1);
   assert.equal(result.reconciled[0].messageId, 'old-msg');
   assert.equal(result.reconciled[0].documentId, 'doc-old');
+
+  // EM10.5 Bug 6 fix — this tombstone must also be visible on the sync
+  // run's own completeSyncRun counts, not just the immediate response
+  // above (which the sync-run HISTORY view — a later page load — can't see).
+  const runRow = emailSyncRepo._runs.get(result.syncRunId);
+  assert.equal(runRow.counts.reconciled, 1);
+  assert.equal(runRow.counts.restored, 0);
 });
 
 test('label-removal reconciliation: a message still under the label is NOT tombstoned', async () => {
@@ -689,6 +696,12 @@ test('policy restoration: a tombstoned message that matches policy again is re-i
   assert.equal(result.restored[0].messageId, 'restored-msg');
   assert.equal(aikbCalls.uploadAndIngest.length, 1);
   assert.equal(aikbCalls.uploadAndIngest[0].sourceFileId, 'restored-msg');
+
+  // EM10.5 Bug 6 fix — the restoration must also land on the sync run's own
+  // completeSyncRun counts (the history view's only source of truth for a
+  // past run), not just this call's immediate response.
+  const runRow = emailSyncRepo._runs.get(result.syncRunId);
+  assert.equal(runRow.counts.restored, 1);
   assert.equal(aikbCalls.uploadAndIngest[0].sourceProvider, 'gmail');
   const event = emailSyncRepo._events.find((e) => e.provider_message_id === 'restored-msg');
   assert.equal(event.outcome, 'restored_policy_change');

@@ -135,6 +135,15 @@ const defaultEmailSyncRepo = {
         messages_skipped: counts.skipped,
         messages_duplicate: counts.duplicate,
         messages_failed: counts.failed,
+        // EM10.5 Bug 6 fix — reconciliation (label-removal/policy-change
+        // tombstoning, and policy-change restoration) previously left no
+        // trace on this row at all; a run that did nothing BUT reconcile
+        // showed "0 imported, 0 skipped, 0 failed" with no visible sign
+        // anything happened. counts.reconciled/counts.restored default to 0
+        // via completeSyncRun's own call site below, so every pre-existing
+        // caller (there is only the one) is unaffected.
+        messages_reconciled: counts.reconciled || 0,
+        messages_restored: counts.restored || 0,
         error_summary: errorSummary || null,
       })
       .eq('id', syncRunId);
@@ -1063,7 +1072,14 @@ function createEmailSyncService({
     const reconciled = [...pageOutcome.reconciled, ...extraReconciled];
 
     await emailSyncRepo.recordEvents(pageOutcome.events);
-    await emailSyncRepo.completeSyncRun(syncRun.id, { status: runStatus, counts: pageOutcome.counts, errorSummary });
+    // EM10.5 Bug 6 fix — reconciled/restored counts are computed above but
+    // were previously never passed through to the sync run's own summary
+    // row (see completeSyncRun's own comment).
+    await emailSyncRepo.completeSyncRun(syncRun.id, {
+      status: runStatus,
+      counts: { ...pageOutcome.counts, reconciled: reconciled.length, restored: restored.length },
+      errorSummary,
+    });
     if (complete && resolvedRunType === 'historical') {
       await emailSyncRepo.updateHistoricalImportStatus(emailConnectionRow.id, runStatus === 'failed' ? 'failed' : 'completed');
     }
