@@ -368,6 +368,60 @@ test('getOrCreateManagedLabel surfaces a create failure as a GMAIL_HTTP_ERROR', 
 });
 
 // ─────────────────────────────────────────────
+// removeLabelFromMessages (EM10.5 Bug 13 — cleanup-on-disconnect must strip
+// the managed label, not just delete the AIKB-side document, or the message
+// silently re-ingests on a later reconnect)
+// ─────────────────────────────────────────────
+
+test('removeLabelFromMessages calls batchModify with removeLabelIds set to the given label', async () => {
+  let captured;
+  const httpClient = {
+    post: async (url, body) => { captured = { url, body }; return { status: 200, data: {} }; },
+  };
+  const service = createGmailService({ httpClient });
+  const result = await service.removeLabelFromMessages({ accessToken: 'token', labelId: 'Label_1', messageIds: ['m1', 'm2'] });
+  assert.equal(result.modified, 2);
+  assert.ok(captured.url.endsWith('/messages/batchModify'));
+  assert.deepEqual(captured.body, { ids: ['m1', 'm2'], removeLabelIds: ['Label_1'] });
+});
+
+test('removeLabelFromMessages is a no-op (no network call) for an empty message list', async () => {
+  let called = false;
+  const httpClient = { post: async () => { called = true; return { status: 200, data: {} }; } };
+  const service = createGmailService({ httpClient });
+  const result = await service.removeLabelFromMessages({ accessToken: 'token', labelId: 'Label_1', messageIds: [] });
+  assert.deepEqual(result, { modified: 0 });
+  assert.equal(called, false);
+});
+
+test('removeLabelFromMessages batches at 1000 ids per batchModify call', async () => {
+  const calls = [];
+  const httpClient = {
+    post: async (url, body) => { calls.push(body.ids.length); return { status: 200, data: {} }; },
+  };
+  const service = createGmailService({ httpClient });
+  const messageIds = Array.from({ length: 1500 }, (_, i) => `m${i}`);
+  const result = await service.removeLabelFromMessages({ accessToken: 'token', labelId: 'Label_1', messageIds });
+  assert.deepEqual(calls, [1000, 500]);
+  assert.equal(result.modified, 1500);
+});
+
+test('removeLabelFromMessages surfaces a batchModify failure as a GMAIL_HTTP_ERROR', async () => {
+  const httpClient = { post: async () => ({ status: 500, data: {} }) };
+  const service = createGmailService({ httpClient });
+  await assert.rejects(
+    () => service.removeLabelFromMessages({ accessToken: 'token', labelId: 'Label_1', messageIds: ['m1'] }),
+    (err) => err.code === ERROR_CODES.HTTP_ERROR
+  );
+});
+
+test('removeLabelFromMessages requires accessToken and labelId', async () => {
+  const service = createGmailService({ httpClient: { post: async () => ({ status: 200, data: {} }) } });
+  await assert.rejects(() => service.removeLabelFromMessages({ labelId: 'L', messageIds: ['m1'] }), /accessToken/);
+  await assert.rejects(() => service.removeLabelFromMessages({ accessToken: 't', messageIds: ['m1'] }), /labelId/);
+});
+
+// ─────────────────────────────────────────────
 // listMessageIdsByQuery / getMessageMetadata (§14.1 preview, §17)
 // ─────────────────────────────────────────────
 

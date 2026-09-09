@@ -185,18 +185,26 @@ async function cleanupMemberContent({ aikbService, clientId, memberId }) {
 
   let deleted = 0;
   let failed = 0;
+  // EM10.5 Bug 13 — collected so disconnect() can also strip the managed
+  // Gmail label from these messages (below, requires the still-valid access
+  // token this function itself doesn't have); without that, an AIKB-only
+  // delete doesn't survive a later reconnect's ordinary label-driven sync.
+  const gmailMessageIds = [];
   for (const doc of docs) {
     const documentId = doc.id || doc.documentId || doc.document_id;
     if (!documentId) continue;
     try {
       await aikbService.deleteDocumentById(clientId, documentId);
       deleted++;
+      const sourceProvider = doc.sourceProvider || doc.source_provider;
+      const sourceFileId = doc.sourceFileId || doc.source_file_id;
+      if (sourceProvider === PROVIDER && sourceFileId) gmailMessageIds.push(sourceFileId);
     } catch (err) {
       failed++;
       console.error('[gmail oauth] disconnect-cleanup delete failed:', documentId, err.message);
     }
   }
-  return { requested: docs.length, deleted, failed };
+  return { requested: docs.length, deleted, failed, gmailMessageIds };
 }
 
 /**
@@ -391,6 +399,11 @@ function createEmailConnectionService({
    * disconnect itself if cleanup partially fails (matches §24.1's own
    * "disconnect always succeeds locally" framing; a cleanup failure is
    * reported back in the response, not thrown).
+   *
+   * EM10.5 Bug 13 fix: cleanup (and the managed-label strip it now also
+   * does — see below) runs BEFORE token revocation, not after. The label
+   * strip needs a still-valid Gmail access token; revoking first would make
+   * every batchModify call in this path fail.
    */
   async function disconnect({ clientId, connectionId, cleanupIngestedContent = false }) {
     if (!clientId) throw new Error('disconnect requires clientId');
@@ -411,9 +424,51 @@ function createEmailConnectionService({
       console.error('[gmail oauth] credential decrypt error during disconnect:', err.message);
     }
 
+    let cleanup;
+    if (cleanupIngestedContent) {
+      let cleanupResult;
+      try {
+        cleanupResult = await cleanupMemberContent({ aikbService, clientId, memberId: connection.connected_by_member_id });
+      } catch (err) {
+        // The connection is still revoked below regardless — a cleanup
+        // failure must never be reported as a failed disconnect, only as a
+        // failed cleanup.
+        console.error('[gmail oauth] disconnect-cleanup error (non-fatal to disconnect itself):', err.message);
+        cleanupResult = { requested: 0, deleted: 0, failed: 0, gmailMessageIds: [], error: err.message };
+      }
+
+      let labelStripped = false;
+      if (accessToken && cleanupResult.gmailMessageIds && cleanupResult.gmailMessageIds.length > 0) {
+        try {
+          const emailConnectionRow = await emailConnectionsRepo.getByOauthConnectionId(connection.id);
+          const labelId = emailConnectionRow && emailConnectionRow.managed_label_id;
+          if (labelId) {
+            await gmailService.removeLabelFromMessages({ accessToken, labelId, messageIds: cleanupResult.gmailMessageIds });
+            labelStripped = true;
+          }
+        } catch (err) {
+          // Best-effort, same discipline as the AIKB deletes above — a
+          // label-strip failure must never fail or block the disconnect.
+          console.error('[gmail oauth] disconnect-cleanup label-strip error (non-fatal):', err.message);
+        }
+      }
+
+      // gmailMessageIds is an internal detail (used above to call Gmail) —
+      // deliberately not included in the response the route echoes back to
+      // the client (routes/integrations/email.js res.json(result)).
+      cleanup = {
+        requested: cleanupResult.requested,
+        deleted: cleanupResult.deleted,
+        failed: cleanupResult.failed,
+        labelStripped,
+        ...(cleanupResult.error ? { error: cleanupResult.error } : {}),
+      };
+    }
+
     if (accessToken) {
       // Best-effort — revokeToken never throws, and its outcome never
-      // changes whether the local connection is marked revoked.
+      // changes whether the local connection is marked revoked. Runs after
+      // cleanup above so the label strip (if any) still had a valid token.
       await gmailService.revokeToken(accessToken);
     }
 
@@ -421,16 +476,6 @@ function createEmailConnectionService({
 
     if (!cleanupIngestedContent) {
       return { disconnected: true };
-    }
-
-    let cleanup;
-    try {
-      cleanup = await cleanupMemberContent({ aikbService, clientId, memberId: connection.connected_by_member_id });
-    } catch (err) {
-      // The connection is already revoked above — a cleanup failure must
-      // never be reported as a failed disconnect, only as a failed cleanup.
-      console.error('[gmail oauth] disconnect-cleanup error (non-fatal to disconnect itself):', err.message);
-      cleanup = { requested: 0, deleted: 0, failed: 0, error: err.message };
     }
     return { disconnected: true, cleanup };
   }

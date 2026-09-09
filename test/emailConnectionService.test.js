@@ -28,6 +28,7 @@ function makeFakes(overrides = {}) {
     listDocuments: [],
     deleteDocumentById: [],
     updateLiveLookupEnabled: [],
+    removeLabelFromMessages: [],
   };
 
   // In-memory model of oauth_connections rows, keyed by connectionId, so
@@ -75,6 +76,11 @@ function makeFakes(overrides = {}) {
       calls.getOrCreateManagedLabel.push(accessToken);
       if (overrides.getOrCreateManagedLabel) return overrides.getOrCreateManagedLabel(accessToken);
       return { labelId: 'Label_managed_1', created: true };
+    },
+    removeLabelFromMessages: async (args) => {
+      calls.removeLabelFromMessages.push(args);
+      if (overrides.removeLabelFromMessages) return overrides.removeLabelFromMessages(args);
+      return { modified: (args.messageIds || []).length };
     },
     refreshAccessToken: async (refreshToken) => {
       calls.refreshAccessToken.push(refreshToken);
@@ -185,6 +191,7 @@ function makeFakes(overrides = {}) {
         oauth_connection_id: oauthConnectionId,
         mailbox_address: 'alex@example.com',
         display_name: 'Alex Doe',
+        managed_label_id: 'Label_managed_1',
         sync_mode: 'manual_selected',
         sync_enabled: true,
         historical_import_status: 'not_started',
@@ -673,7 +680,9 @@ test('disconnect with cleanupIngestedContent:true enumerates documents filtered 
   assert.deepEqual(calls.listDocuments[0], { clientId: 'client-a', filters: { contributingMemberId: 'member-a' } });
   assert.equal(calls.deleteDocumentById.length, 2);
   assert.deepEqual(calls.deleteDocumentById.map((c) => c.documentId).sort(), ['doc-1', 'doc-2']);
-  assert.deepEqual(result.cleanup, { requested: 2, deleted: 2, failed: 0 });
+  // Neither doc carries a source_provider/source_file_id, so there is
+  // nothing to strip a Gmail label from — labelStripped stays false.
+  assert.deepEqual(result.cleanup, { requested: 2, deleted: 2, failed: 0, labelStripped: false });
 });
 
 test('disconnect cleanup is best-effort: one delete failure is counted, not thrown, and the rest still proceed', async () => {
@@ -686,7 +695,7 @@ test('disconnect cleanup is best-effort: one delete failure is counted, not thro
     },
   });
   const result = await service.disconnect({ clientId: 'client-a', connectionId: 'conn-1', cleanupIngestedContent: true });
-  assert.deepEqual(result.cleanup, { requested: 2, deleted: 1, failed: 1 });
+  assert.deepEqual(result.cleanup, { requested: 2, deleted: 1, failed: 1, labelStripped: false });
   // The connection itself is still disconnected regardless of cleanup outcome.
   assert.equal(result.disconnected, true);
 });
@@ -697,7 +706,80 @@ test('disconnect cleanup with zero contributed documents is a safe no-op', async
     listDocuments: async () => ({ documents: [] }),
   });
   const result = await service.disconnect({ clientId: 'client-a', connectionId: 'conn-1', cleanupIngestedContent: true });
-  assert.deepEqual(result.cleanup, { requested: 0, deleted: 0, failed: 0 });
+  assert.deepEqual(result.cleanup, { requested: 0, deleted: 0, failed: 0, labelStripped: false });
+});
+
+// ─────────────────────────────────────────────
+// disconnect — cleanup also strips the managed Gmail label (EM10.5 Bug 13)
+// ─────────────────────────────────────────────
+
+test('disconnect cleanup strips the managed label from every deleted gmail-sourced document, using the still-valid access token', async () => {
+  const docs = [
+    { id: 'doc-1', source_provider: 'gmail', source_file_id: 'gmail-msg-1' },
+    { id: 'doc-2', source_provider: 'gmail', source_file_id: 'gmail-msg-2' },
+  ];
+  const { service, calls } = makeFakes({
+    getConnectionById: async () => ({ id: 'conn-1', client_id: 'client-a', provider: 'gmail', connected_by_member_id: 'member-a', status: 'active' }),
+    listDocuments: async () => ({ documents: docs }),
+  });
+  const result = await service.disconnect({ clientId: 'client-a', connectionId: 'conn-1', cleanupIngestedContent: true });
+
+  assert.equal(calls.removeLabelFromMessages.length, 1);
+  assert.equal(calls.removeLabelFromMessages[0].accessToken, 'ya29.decrypted-token');
+  assert.equal(calls.removeLabelFromMessages[0].labelId, 'Label_managed_1');
+  assert.deepEqual(calls.removeLabelFromMessages[0].messageIds.sort(), ['gmail-msg-1', 'gmail-msg-2']);
+  assert.deepEqual(result.cleanup, { requested: 2, deleted: 2, failed: 0, labelStripped: true });
+  assert.equal(calls.revokeToken.length, 1, 'revokeToken should still be called once, after the strip');
+});
+
+test('disconnect cleanup never strips a label from a non-gmail (e.g. portal_upload) document', async () => {
+  const docs = [{ id: 'doc-1', source_provider: 'portal_upload', source_file_id: 'some-uuid' }];
+  const { service, calls } = makeFakes({
+    getConnectionById: async () => ({ id: 'conn-1', client_id: 'client-a', provider: 'gmail', connected_by_member_id: 'member-a', status: 'active' }),
+    listDocuments: async () => ({ documents: docs }),
+  });
+  const result = await service.disconnect({ clientId: 'client-a', connectionId: 'conn-1', cleanupIngestedContent: true });
+  assert.equal(calls.removeLabelFromMessages.length, 0);
+  assert.deepEqual(result.cleanup, { requested: 1, deleted: 1, failed: 0, labelStripped: false });
+});
+
+test('disconnect cleanup skips the label strip (but still succeeds) when the access token could not be decrypted', async () => {
+  const docs = [{ id: 'doc-1', source_provider: 'gmail', source_file_id: 'gmail-msg-1' }];
+  const { service, calls } = makeFakes({
+    getConnectionById: async () => ({ id: 'conn-1', client_id: 'client-a', provider: 'gmail', connected_by_member_id: 'member-a', status: 'active' }),
+    listDocuments: async () => ({ documents: docs }),
+    getDecryptedCredentialForConnection: async () => { throw new Error('simulated decrypt failure'); },
+  });
+  const result = await service.disconnect({ clientId: 'client-a', connectionId: 'conn-1', cleanupIngestedContent: true });
+  assert.equal(calls.removeLabelFromMessages.length, 0);
+  assert.equal(calls.revokeToken.length, 0); // no token to revoke either
+  assert.deepEqual(result.cleanup, { requested: 1, deleted: 1, failed: 0, labelStripped: false });
+});
+
+test('disconnect cleanup skips the label strip when the connection has no managed_label_id on record', async () => {
+  const docs = [{ id: 'doc-1', source_provider: 'gmail', source_file_id: 'gmail-msg-1' }];
+  const { service, calls } = makeFakes({
+    getConnectionById: async () => ({ id: 'conn-1', client_id: 'client-a', provider: 'gmail', connected_by_member_id: 'member-a', status: 'active' }),
+    listDocuments: async () => ({ documents: docs }),
+    getByOauthConnectionId: async () => ({ oauth_connection_id: 'conn-1', managed_label_id: null }),
+  });
+  const result = await service.disconnect({ clientId: 'client-a', connectionId: 'conn-1', cleanupIngestedContent: true });
+  assert.equal(calls.removeLabelFromMessages.length, 0);
+  assert.deepEqual(result.cleanup, { requested: 1, deleted: 1, failed: 0, labelStripped: false });
+});
+
+test('disconnect cleanup label-strip failure is non-fatal: reported as labelStripped:false, disconnect still succeeds', async () => {
+  const docs = [{ id: 'doc-1', source_provider: 'gmail', source_file_id: 'gmail-msg-1' }];
+  const { service, calls } = makeFakes({
+    getConnectionById: async () => ({ id: 'conn-1', client_id: 'client-a', provider: 'gmail', connected_by_member_id: 'member-a', status: 'active' }),
+    listDocuments: async () => ({ documents: docs }),
+    removeLabelFromMessages: async () => { throw new Error('simulated Gmail batchModify failure'); },
+  });
+  const result = await service.disconnect({ clientId: 'client-a', connectionId: 'conn-1', cleanupIngestedContent: true });
+  assert.deepEqual(result.cleanup, { requested: 1, deleted: 1, failed: 0, labelStripped: false });
+  assert.equal(result.disconnected, true);
+  // Revocation still proceeds after a label-strip failure.
+  assert.equal(calls.revokeToken.length, 1);
 });
 
 // ─────────────────────────────────────────────

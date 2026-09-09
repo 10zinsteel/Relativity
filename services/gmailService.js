@@ -408,6 +408,45 @@ function createGmailService({ httpClient = axios } = {}) {
   }
 
   /**
+   * `users.messages.batchModify` — strips the managed label from a batch of
+   * messages. EM10.5 Bug 13: cleanup-on-disconnect (§24.1) previously only
+   * deleted the AIKB-side documents, never touched the source Gmail
+   * messages, so a later reconnect's ordinary label-driven sync would
+   * silently re-ingest them. This is what makes that deletion durable.
+   * Batched at Gmail's own batchModify limit (1000 ids/call) — cleanup runs
+   * are member-scoped and expected to stay well under that in practice, but
+   * this doesn't assume it. Best-effort by design at the call site
+   * (services/emailConnectionService.js#disconnect): a failure here must
+   * never fail or block the disconnect itself.
+   */
+  async function removeLabelFromMessages({ accessToken, labelId, messageIds }) {
+    if (!accessToken) throw new Error('removeLabelFromMessages requires accessToken');
+    if (!labelId) throw new Error('removeLabelFromMessages requires labelId');
+    if (!Array.isArray(messageIds) || messageIds.length === 0) return { modified: 0 };
+
+    const BATCH_SIZE = 1000;
+    let modified = 0;
+    for (let i = 0; i < messageIds.length; i += BATCH_SIZE) {
+      const batch = messageIds.slice(i, i + BATCH_SIZE);
+      let response;
+      try {
+        response = await httpClient.post(
+          `${GMAIL_API_BASE}/messages/batchModify`,
+          { ids: batch, removeLabelIds: [labelId] },
+          { headers: { Authorization: `Bearer ${accessToken}` }, timeout: GMAIL_API_TIMEOUT_MS }
+        );
+      } catch {
+        throw gmailError(ERROR_CODES.HTTP_ERROR, 'Gmail messages.batchModify request failed');
+      }
+      if (!response || response.status < 200 || response.status >= 300) {
+        throw gmailError(ERROR_CODES.HTTP_ERROR, 'Gmail messages.batchModify returned an unsuccessful HTTP status');
+      }
+      modified += batch.length;
+    }
+    return { modified };
+  }
+
+  /**
    * `users.messages.list` — returns bare `{id}` results only (no metadata),
    * matching Gmail's own API shape; callers fetch metadata per message via
    * getMessageMetadata below. Bounded by `maxResults` (a preview/pagination
@@ -703,6 +742,7 @@ function createGmailService({ httpClient = axios } = {}) {
     refreshAccessToken,
     listLabels,
     getOrCreateManagedLabel,
+    removeLabelFromMessages,
     listMessageIdsByQuery,
     getMessageMetadata,
     getMessageBody,
