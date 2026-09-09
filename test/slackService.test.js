@@ -33,17 +33,18 @@ test('buildAuthorizationUrl uses SLACK_CLIENT_ID, the exact redirect URI, and in
   assert.equal(url.searchParams.get('state'), 'raw-state-value');
 });
 
-test('buildAuthorizationUrl requests exactly app_mentions:read and chat:write — nothing more, nothing less', () => {
+test('buildAuthorizationUrl requests exactly the channel-mention and DM scopes — nothing more, nothing less', () => {
   const url = new URL(buildAuthorizationUrl({ state: 's' }));
   const scopes = url.searchParams.get('scope').split(',');
-  assert.deepEqual(scopes.sort(), ['app_mentions:read', 'chat:write'].sort());
-  assert.deepEqual(REQUIRED_SCOPES.sort(), ['app_mentions:read', 'chat:write'].sort());
+  const expected = ['app_mentions:read', 'chat:write', 'im:history', 'im:read', 'im:write'];
+  assert.deepEqual(scopes.sort(), expected.sort());
+  assert.deepEqual(REQUIRED_SCOPES.sort(), expected.sort());
 });
 
 test('buildAuthorizationUrl never requests incoming-webhook or any excluded scope', () => {
   const url = new URL(buildAuthorizationUrl({ state: 's' }));
   const scopeParam = url.searchParams.get('scope');
-  for (const forbidden of ['incoming-webhook', 'im:history', 'channels:history', 'groups:history', 'users:read', 'users:read.email']) {
+  for (const forbidden of ['incoming-webhook', 'channels:history', 'groups:history', 'users:read', 'users:read.email']) {
     assert.equal(scopeParam.includes(forbidden), false, `scope must not include "${forbidden}"`);
   }
 });

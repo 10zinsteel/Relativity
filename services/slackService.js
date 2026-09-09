@@ -11,10 +11,15 @@
 const axios = require('axios');
 const { slack } = require('../config');
 
-// Exactly the two scopes approved for this milestone. Do not add
-// incoming-webhook, im:history, channels:history, groups:history,
-// users:read, users:read.email, or any direct-message scope here.
-const REQUIRED_SCOPES = ['app_mentions:read', 'chat:write'];
+// app_mentions:read/chat:write cover channel @mentions; im:history/im:read/
+// im:write are required for DM support (services/slackEventsService.js's
+// channel_type === 'im' handling, live since before EL7C and still active
+// after it — EL7C only removed DM identity linking/live lookup, not DM
+// handling itself). Do not add incoming-webhook, channels:history,
+// groups:history, users:read, or users:read.email here — group DMs (mpim)
+// are explicitly unsupported (backlog M13) and no scope here should imply
+// otherwise.
+const REQUIRED_SCOPES = ['app_mentions:read', 'chat:write', 'im:history', 'im:read', 'im:write'];
 
 const OAUTH_TIMEOUT_MS = 10000;
 
