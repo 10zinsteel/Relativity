@@ -378,7 +378,11 @@ nav.menu-open .mobile-menu-btn span:nth-child(3) {
   color: #fff;
 }
 
-.hero-proof {
+/* .proof-panel.hero-proof (not just .hero-proof) so this outranks the
+   later, equal-specificity .proof-panel rule below — otherwise its
+   var(--surface) background wins in light mode and leaves white text
+   (from the more specific .hero-proof descendant rules) on a white box. */
+.proof-panel.hero-proof {
   max-width: 480px;
   background: rgba(13, 13, 13, 0.72);
   border-color: rgba(255, 255, 255, 0.1);
