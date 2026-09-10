@@ -1,3 +1,49 @@
+// === Hero black hole ===
+// Pushed off-center via `focus` so the busy half and the reading half of the
+// hero never overlap; `scrim` darkens only the edge the copy sits on. On
+// narrow viewports there's no room to stand them side by side, so the whole
+// thing turns 90°: hole low, copy high, veil from the top — and the ray
+// count drops, since a phone pays for every step.
+(() => {
+  const host = document.getElementById('heroBlackhole');
+  const canvas = document.getElementById('heroBlackholeCanvas');
+  if (!host || !canvas || !window.RelativityBlackHole) return;
+
+  const narrowQuery = window.matchMedia('(max-width: 767px)');
+
+  const layoutFor = (narrow) => ({
+    focus: narrow ? [0.5, 0.7] : [0.72, 0.46],
+    scrim: narrow ? 'top' : 'left',
+    elevation: narrow ? -7 : -5.5,
+    fov: narrow ? 58 : 42,
+    glow: narrow ? 0.85 : 1,
+    steps: narrow ? 200 : 300,
+    resolution: narrow ? 0.6 : 0.7,
+  });
+
+  const blackHole = window.RelativityBlackHole.init(host, canvas, Object.assign({
+    distance: 24,
+    roll: -20,
+    diskInner: 3,
+    diskOuter: 15,
+    diskThickness: 0.26,
+    diskDensity: 1,
+    brightness: 1,
+    spinSpeed: 0.06,
+    grain: 0.48,
+    doppler: 0.35,
+    hotColor: '#FFF3DE',
+    midColor: '#FF9838',
+    coolColor: '#8E3A0B',
+    exposure: 0.9,
+    vignette: 0.28,
+    scrimStrength: 0.9,
+    maxDpr: 1.75,
+  }, layoutFor(narrowQuery.matches)));
+
+  narrowQuery.addEventListener('change', (e) => blackHole.setOptions(layoutFor(e.matches)));
+})();
+
 // === Nav scroll state ===
 const nav = document.getElementById('nav');
 window.addEventListener('scroll', () => {

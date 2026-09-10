@@ -61,7 +61,10 @@
 
   <!-- Hero -->
   <section class="hero" id="hero">
-    <div class="container hero-grid">
+    <div class="hero-blackhole" id="heroBlackhole" aria-hidden="true">
+      <canvas id="heroBlackholeCanvas"></canvas>
+    </div>
+    <div class="container hero-inner">
       <div class="hero-content fade-in">
         <span class="eyebrow">Relativity Systems</span>
         <h1>The operating knowledge base for your entire company.</h1>
@@ -70,10 +73,8 @@
           <a href="#contact" class="btn btn-primary">Book a Demo</a>
           <a href="#workflow" class="btn btn-ghost">See how it works &rarr;</a>
         </div>
-      </div>
 
-      <div class="hero-visual fade-in">
-        <div class="proof-panel">
+        <div class="proof-panel hero-proof">
           <span class="proof-context">Asked in the portal</span>
           <div class="proof-exchange">
             <p class="proof-q">What should we do if a client asks to reschedule last minute?</p>
@@ -383,6 +384,7 @@
     </div>
   </footer>
 
+  <script src="blackhole-hero.js"></script>
   <script src="mainPg.js"></script>
 </body>
 </html>

@@ -206,6 +206,48 @@ nav#nav .btn-outline {
   font-size: 0.825rem;
 }
 
+/* The hero behind the nav is always a black WebGL scene, regardless of the
+   light/dark toggle, so the unscrolled nav is pinned to light-on-dark too.
+   Once .scrolled lands (past the hero) it reverts to the theme-aware
+   var-based colors, since whatever section is now behind it follows the
+   page theme. */
+nav#nav:not(.scrolled) .logo-img {
+  filter: none;
+}
+
+nav#nav:not(.scrolled) .nav-links a {
+  color: rgba(255, 255, 255, 0.7);
+}
+
+nav#nav:not(.scrolled) .nav-links a:hover {
+  color: #fff;
+}
+
+nav#nav:not(.scrolled) .btn-outline {
+  border-color: rgba(255, 255, 255, 0.2);
+  color: rgba(255, 255, 255, 0.85);
+}
+
+nav#nav:not(.scrolled) .btn-outline:hover {
+  border-color: rgba(255, 255, 255, 0.4);
+  background: rgba(255, 255, 255, 0.06);
+  color: #fff;
+}
+
+nav#nav:not(.scrolled) .theme-toggle {
+  border-color: rgba(255, 255, 255, 0.2);
+  color: rgba(255, 255, 255, 0.85);
+}
+
+nav#nav:not(.scrolled) .theme-toggle:hover {
+  border-color: rgba(255, 255, 255, 0.4);
+  color: #fff;
+}
+
+nav#nav:not(.scrolled) .mobile-menu-btn span {
+  background: rgba(255, 255, 255, 0.85);
+}
+
 /* === Mobile Menu Button === */
 .mobile-menu-btn {
   display: none;
@@ -250,38 +292,61 @@ nav.menu-open .mobile-menu-btn span:nth-child(3) {
    HERO
    ============================================================ */
 .hero {
+  position: relative;
+  overflow: hidden;
   padding: 200px 0 140px;
+  min-height: 700px;
   display: flex;
   align-items: center;
+  background: #000;
 }
 
-.hero-grid {
-  display: grid;
-  grid-template-columns: 1.05fr 0.95fr;
-  gap: 64px;
-  align-items: center;
+/* The renderer paints a full-bleed backdrop; the hole sits off to one side
+   (via its `focus` option) so it never fights the copy for attention, and
+   its own scrim pass darkens the edge the copy sits on. If WebGL is
+   unavailable the canvas hides itself and this solid black remains. */
+.hero-blackhole {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+}
+
+.hero-blackhole canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.hero-inner {
+  position: relative;
+  z-index: 1;
 }
 
 .hero-content {
   max-width: 560px;
 }
 
-.eyebrow {
+/* Hero copy always sits over the black hole regardless of the light/dark
+   toggle, so its colors are fixed rather than pulled from the theme tokens. */
+.hero .eyebrow {
   font-size: 0.7rem;
   font-weight: 500;
   letter-spacing: 0.15em;
   text-transform: uppercase;
-  color: var(--badge-orange);
+  color: #fa4902;
   margin-bottom: 24px;
   display: block;
 }
 
 .hero h1 {
   margin-bottom: 26px;
+  color: #fff;
 }
 
 .hero-sub {
-  color: var(--text-secondary);
+  color: rgba(255, 255, 255, 0.65);
   font-size: 1.1rem;
   max-width: 480px;
   margin-bottom: 40px;
@@ -293,6 +358,45 @@ nav.menu-open .mobile-menu-btn span:nth-child(3) {
   gap: 24px;
   align-items: center;
   flex-wrap: wrap;
+  margin-bottom: 48px;
+}
+
+.hero .btn-primary {
+  background: #fff;
+  color: #000;
+}
+
+.hero .btn-primary:hover {
+  background: #e8e8e8;
+}
+
+.hero .btn-ghost {
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.hero .btn-ghost:hover {
+  color: #fff;
+}
+
+.hero-proof {
+  max-width: 480px;
+  background: rgba(13, 13, 13, 0.72);
+  border-color: rgba(255, 255, 255, 0.1);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+}
+
+.hero-proof .proof-context,
+.hero-proof .proof-cite {
+  color: rgba(255, 255, 255, 0.5);
+}
+
+.hero-proof .proof-q {
+  color: #fff;
+}
+
+.hero-proof .proof-a {
+  color: rgba(255, 255, 255, 0.75);
 }
 
 /* === Proof panel — used in the hero and feature mockups === */
@@ -861,15 +965,16 @@ footer {
 /* === Responsive === */
 @media (max-width: 960px) {
   .hero {
-    padding: 160px 0 96px;
-  }
-
-  .hero-grid {
-    grid-template-columns: 1fr;
-    gap: 48px;
+    padding: 140px 0 64px;
+    min-height: 100svh;
+    align-items: flex-start;
   }
 
   .hero-content {
+    max-width: 100%;
+  }
+
+  .hero-proof {
     max-width: 100%;
   }
 
